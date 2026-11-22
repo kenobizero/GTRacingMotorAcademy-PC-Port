@@ -263,6 +263,7 @@ __attribute__((noreturn)) void gt_crash(int code, const char *why)
              rt_log_enabled() ? "The details are in gtracing.log, in the GTRacing folder. Please send that file with "
                                 "your bug report." : "The log is off (GT_LOG=0).");
     al_stop_all();
+    SDL_InitSubSystem(SDL_INIT_VIDEO);  /* the box is the video driver's (Java's dialog): before the window too */
     SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GT_GAME_TITLE, text, NULL);
     _exit(code);
 }

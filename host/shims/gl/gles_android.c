@@ -37,6 +37,17 @@ static Quad quads[8];                /* the thread id with the window's surface 
 
 void *gt_gl_current(void) { return (void *)eglGetCurrentContext(); }
 
+/* the window's surface now: SDL's Android window keeps it as a property (SDL_EGL_GetWindowSurface is not
+   implemented on Android: it gives NULL); none while the app is in the background */
+static EGLSurface window_surface(void)
+{
+    if (!ui_window || ui_app_background)
+        return EGL_NO_SURFACE;
+    EGLSurface s = (EGLSurface)SDL_GetPointerProperty(SDL_GetWindowProperties(ui_window),
+                                                      SDL_PROP_WINDOW_ANDROID_SURFACE_POINTER, NULL);
+    return s ? s : EGL_NO_SURFACE;
+}
+
 SDL_GLContext gla_create(void)
 {
     if (first == EGL_NO_CONTEXT) {
@@ -50,9 +61,11 @@ SDL_GLContext gla_create(void)
            calling thread's SDL-current context, unbinds it and binds it again on resume, which would put the window
            on the event thread.  With none known to SDL that is a no-op, and present() binds the window's new
            surface itself after a resume. */
-        EGLSurface s = (EGLSurface)SDL_EGL_GetWindowSurface(ui_window);
+        EGLSurface s = window_surface();
         SDL_GL_MakeCurrent(ui_window, NULL);
-        eglMakeCurrent(dpy, s, s, first);
+        if (s == EGL_NO_SURFACE || !eglMakeCurrent(dpy, s, s, first))
+            eglMakeCurrent(dpy, EGL_NO_SURFACE, EGL_NO_SURFACE, first);
+        rt_log("[egl] the window's surface: %p\n", (void *)s);
         InterlockedExchange(&owner, (LONG)GetCurrentThreadId());
         const char *ext = eglQueryString(dpy, EGL_EXTENSIONS);
         rt_log("[egl] first context %p; surfaceless contexts: %s\n", (void *)first,
@@ -82,10 +95,7 @@ void gla_destroy(SDL_GLContext c)
     eglDestroyContext(dpy, (EGLContext)c);
 }
 
-static EGLSurface window_surface(void)
-{
-    return ui_window ? (EGLSurface)SDL_EGL_GetWindowSurface(ui_window) : EGL_NO_SURFACE;
-}
+
 
 /* 1 on success.  The window's surface stays with the thread that presents (gla_present_begin takes it); every
    other context is made current without a surface.  The game draws into its own framebuffer objects only (an
@@ -121,6 +131,9 @@ int gla_present_begin(void)
         return 0;
     if (eglGetCurrentSurface(EGL_DRAW) == s)
         return 1;
+    EGLint w = 0;
+    if (!eglQuerySurface(dpy, s, EGL_WIDTH, &w))
+        return 0;                          /* gone already (the app is leaving the screen) */
     LONG me = (LONG)GetCurrentThreadId();
     if (InterlockedCompareExchange(&owner, me, 0) != 0 && owner != me) {
         static int said;
