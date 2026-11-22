@@ -58,6 +58,18 @@ On any PC (Windows, Linux or macOS):
 
    `assembleDebug` builds the development host (`GT_DEV=1`: the diagnostic keys and traces).
 
+### Building on GitHub (no PC needed)
+
+`.github/workflows/android.yml` builds the APK on GitHub's machines. Only the game's program is needed for that
+(the file `GTRacingFreemiumHD` inside `GTRacingFreemiumHD.app`, a few MB), never its other files:
+
+1. Upload that one file somewhere that gives a direct-download link (Google Drive:
+   `https://drive.google.com/uc?export=download&id=<file id>`, Dropbox: the share link with `?dl=1`).
+2. In your fork on GitHub: Settings > Secrets and variables > Actions > New repository secret, name
+   `GAME_EXE_URL`, value: that link. Secrets are never shown in the logs or to other people.
+3. Actions > Android APK > Run workflow (or push to `android-port`). The build takes about an hour; the APK is
+   the run's artifact `GTRacing-android-apk` (a zip; kept 7 days).
+
 ## Installing and playing
 
 1. Install the APK.

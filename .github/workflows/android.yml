@@ -1,0 +1,83 @@
+# Builds the Android APK (android/README.md) on GitHub's machines.
+#
+# It needs the game's program, which is never in the repository: put a direct-download link to YOUR
+# GTRacingFreemiumHD (the file inside GTRacingFreemiumHD.app, version 1.3.4b) in the repository secret
+# GAME_EXE_URL (Settings > Secrets and variables > Actions).  Only that one file is needed to build; the
+# game's other files stay on your phone.  The APK is left as the run's artifact (Actions > the run > Artifacts).
+name: Android APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [android-port]
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 300
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The game's program (secret GAME_EXE_URL)
+        id: game
+        env:
+          GAME_EXE_URL: ${{ secrets.GAME_EXE_URL }}
+        run: |
+          if [ -z "$GAME_EXE_URL" ]; then
+            echo "::warning::No GAME_EXE_URL secret: nothing to build (see the top of .github/workflows/android.yml)"
+            echo "ok=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          mkdir -p GTRacingFreemiumHD.app
+          curl -fsSL --retry 3 -o GTRacingFreemiumHD.app/GTRacingFreemiumHD "$GAME_EXE_URL"
+          if ! echo "eaeca1915d8b0a250583afed587f61ecb85a728a  GTRacingFreemiumHD.app/GTRacingFreemiumHD" | sha1sum -c --quiet -; then
+            echo "::error::The file GAME_EXE_URL gives is not GTRacingFreemiumHD 1.3.4b (wrong SHA-1; a share page instead of the file itself?)"
+            head -c 200 GTRacingFreemiumHD.app/GTRacingFreemiumHD | strings | head -3
+            exit 1
+          fi
+          echo "ok=1" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/setup-python@v5
+        if: steps.game.outputs.ok == '1'
+        with:
+          python-version: '3.12'
+
+      - uses: actions/setup-java@v4
+        if: steps.game.outputs.ok == '1'
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Python packages, NDK, CMake
+        if: steps.game.outputs.ok == '1'
+        run: |
+          pip install "capstone>=5,<6"
+          yes | "$ANDROID_HOME/cmdline-tools/latest/bin/sdkmanager" "ndk;27.0.12077973" "cmake;3.22.1" > /dev/null
+
+      - name: Cache stage 1 and 2 (the generated code; rebuilt when recomp/ changes)
+        if: steps.game.outputs.ok == '1'
+        uses: actions/cache@v4
+        with:
+          path: |
+            analysis/stage1
+            build/gen
+          key: gen-${{ hashFiles('recomp/**') }}
+
+      - name: Generated code, bridges, SDL 3
+        if: steps.game.outputs.ok == '1'
+        run: python -I android/prepare.py
+
+      - name: Build the APK
+        if: steps.game.outputs.ok == '1'
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - uses: actions/upload-artifact@v4
+        if: steps.game.outputs.ok == '1'
+        with:
+          name: GTRacing-android-apk
+          path: android/app/build/outputs/apk/release/*.apk
+          retention-days: 7
+          if-no-files-found: error
