@@ -101,6 +101,8 @@ defaults are below), the log `GTRacing/gtracing.log`.
 | `GT_FXAA` | `0` | FXAA over the picture as it is drawn on the screen, alone or over MSAA. Options > Display > Anti-aliasing: Off, FXAA, 2x, 4x, 4x + FXAA, Auto |
 | `GT_VSYNC` | `0` | the frame cap paces the frames (a capped rate only; uncapped always waits for the screen) |
 | `GT_BIG_CORES`, `GT_PERF_HINT` | `1`, `1` | the game's threads on the fast cores; the frame thread's clocks raised to keep the frame rate (Android 13+) |
+| `GT_PRIME_CORE` | `1` | the frame thread alone on the fastest core (a Snapdragon 870's 3.19 GHz one), the other threads off it |
+| `GT_DISCARD` | `1` | the frame's samples and depth not written back to memory after each present (glInvalidateFramebuffer) |
 | `GT_GPU_PROFILE` | `igpu` | the lighter motion blur; `full` for the iPad 2's full one |
 | `GT_TILT_INVERT` | `0` | `1` turns the tilt steering's direction, for a phone whose sensor axes differ |
 

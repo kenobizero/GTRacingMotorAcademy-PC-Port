@@ -130,6 +130,10 @@ RtThread *rt_thread_new(u32 stack_size)
     void gt_fault_thread_init(void);
     gt_fault_thread_init();             /* fault_android.c: the fault handler's own stack on this thread */
 #endif
+#ifdef __ANDROID__
+    void gt_android_thread_others(void);
+    gt_android_thread_others();         /* main.c PRIME_CORE: the fastest core is the frame thread's */
+#endif
     return t;
 }
 

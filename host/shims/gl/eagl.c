@@ -274,6 +274,10 @@ static void present(Ctx *x)
     if (!drawable_rb || rb_w <= 0 || rb_h <= 0)
         return;
 #if !GT_GL_DESKTOP
+    {
+        void gt_android_pin_frame_thread(void);
+        gt_android_pin_frame_thread();  /* main.c PRIME_CORE */
+    }
     if (!gla_present_begin()) {         /* Android: in the background (no surface), or another thread has the window */
         p_glFlush();
         frames++;
@@ -342,6 +346,33 @@ static void present(Ctx *x)
     }
     gles_bind_fb(GL_DRAW_FRAMEBUFFER, x->dst_fbo);
     p_glBlitFramebuffer(0, 0, (u32)rb_w, (u32)rb_h, 0, 0, (u32)rb_w, (u32)rb_h, GL_COLOR_BUFFER_BIT, GL_NEAREST);
+#if !GT_GL_DESKTOP
+    {
+        /* DISCARD (GT_DISCARD=1, the default): the frame's framebuffer told it is done with.  A phone's GPU draws
+           the frame tile by tile in its own small memory and writes every attachment back to the phone's memory
+           at the end -- the 4 samples of colour and of depth a pixel with MSAA, ~35 MB a frame at 1584 x 720 -- unless
+           told the contents are no longer wanted.  They are not: the colour is copied above, the depth starts
+           cleared, and the iPad's own drawable keeps nothing after a present either (RetainedBacking = 0). */
+        static int on = -1;
+        static void (*inval)(u32, int, const u32 *);
+        if (on < 0) {
+            const char *e = getenv("GT_DISCARD");
+            inval = (void (*)(u32, int, const u32 *))SDL_GL_GetProcAddress("glInvalidateFramebuffer");
+            on = !(e && *e == '0') && inval;
+            rt_log("[gl] DISCARD: %s\n", on ? "on (the frame's samples and depth not written back)"
+                                             : inval ? "off (GT_DISCARD=0)" : "off (no glInvalidateFramebuffer)");
+        }
+        if (on) {
+            static const u32 att[3] = {GL_COLOR_ATTACHMENT0, GL_DEPTH_ATTACHMENT, GL_STENCIL_ATTACHMENT};
+            u32 glx_main_fbo(void);
+            u32 game = ms ? ms : glx_main_fbo();
+            if (game) {
+                gles_bind_fb(GL_READ_FRAMEBUFFER, game);
+                inval(GL_READ_FRAMEBUFFER, 3, att);
+            }
+        }
+    }
+#endif
 
     /* where the texture's corners are in the window: layer -> screen (portrait) -> landscape -> pixels */
     float lw = UI_SCREEN_W, lh = UI_SCREEN_H, ls = 1;

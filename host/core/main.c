@@ -319,6 +319,31 @@ static void android_dirs(void)
    quarter of the speed.  The fast cores: those whose highest clock is at least 3/4 of the fastest one's (on a
    Snapdragon 870: the four Cortex-A77).  Set on the host's main thread before the game's threads are made: they
    take its mask. */
+/* PRIME_CORE (GT_PRIME_CORE=1, the default): the thread that draws the frames (the game's own loop and its GL
+   calls: the frame's whole CPU time) on the fastest core alone (a Snapdragon 870's Cortex-A77 at 3.19 GHz; the
+   other three run at 2.42), and every other thread of the game off it, so nothing takes it from the frame. */
+static cpu_set_t big_others, big_prime;
+static int prime_ok;
+
+/* each new thread of the game (rt_thread_new, CreateThread): the fast cores but the prime one */
+void gt_android_thread_others(void)
+{
+    if (prime_ok)
+        sched_setaffinity(0, sizeof big_others, &big_others);
+}
+
+/* present (eagl.c): the first thread that presents a frame gets the prime core */
+void gt_android_pin_frame_thread(void)
+{
+    static pid_t pinned;
+    if (!prime_ok || pinned)
+        return;
+    pinned = gettid();
+    int r = sched_setaffinity(0, sizeof big_prime, &big_prime);
+    rt_log("[main] PRIME_CORE: the frame thread %d on the fastest core alone%s\n", (int)pinned,
+           r ? " -- refused" : "");
+}
+
 static void android_big_cores(void)
 {
     const char *e = getenv("GT_BIG_CORES");
@@ -341,17 +366,28 @@ static void android_big_cores(void)
         return;
     cpu_set_t set;
     CPU_ZERO(&set);
-    int k = 0;
+    CPU_ZERO(&big_others);
+    CPU_ZERO(&big_prime);
+    int k = 0, kp = 0;
     for (int i = 0; i < n; i++)
         if (f[i] * 4 >= top * 3) {
             CPU_SET(i, &set);
             k++;
+            if (f[i] == top) {
+                CPU_SET(i, &big_prime);
+                kp++;
+            } else
+                CPU_SET(i, &big_others);
         }
-    if (k == 0 || k == n)
-        return;                             /* all the same speed */
-    int r = sched_setaffinity(0, sizeof set, &set);
-    rt_log("[main] BIG_CORES: the game's threads on %d of %d cores (%ld MHz)%s\n", k, n, top / 1000,
-           r ? " -- refused" : "");
+    if (k == 0)
+        return;
+    const char *pe = getenv("GT_PRIME_CORE");
+    prime_ok = !(pe && *pe == '0') && kp > 0 && kp < k;
+    int r = k < n ? sched_setaffinity(0, sizeof set, &set) : 0;
+    rt_log("[main] BIG_CORES: the game's threads on %d of %d cores (%ld MHz)%s; PRIME_CORE: %s\n", k, n,
+           top / 1000, r ? " -- refused" : "",
+           prime_ok ? "the frame thread on the fastest, the others off it"
+                    : pe && *pe == '0' ? "off (GT_PRIME_CORE=0)" : "no faster core than the rest");
 }
 
 /* The port's menu pages (the patched menu SWFs, host/build.py's patch/): an APK built with the game's menu files

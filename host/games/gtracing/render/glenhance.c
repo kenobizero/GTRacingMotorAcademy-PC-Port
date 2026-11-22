@@ -131,6 +131,9 @@ void glx_drawable_changed(u32 rb)
 }
 
 /* the framebuffer eagl.c presents from, 0 = the drawable renderbuffer as on the iPad */
+/* the game's own main framebuffer (0 not known yet) */
+u32 glx_main_fbo(void) { return main_fbo; }
+
 u32 glx_present_fbo(void)
 {
     return ms_fbo && ms_w && samples > 0 && !ms_failed && gt_gl_current() == main_ctx ? ms_fbo : 0;

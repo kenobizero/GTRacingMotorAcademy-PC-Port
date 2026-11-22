@@ -150,6 +150,10 @@ static void h_signal(HANDLE h)
 static void *thread_start(void *p)
 {
     HANDLE h = p;
+#ifdef __ANDROID__
+    void gt_android_thread_others(void);
+    gt_android_thread_others();         /* main.c PRIME_CORE */
+#endif
     h->fn(h->arg);
     h_signal(h);
     h_unref(h);
@@ -272,6 +276,10 @@ BOOL CloseHandle(HANDLE h)
 typedef struct { PTP_SIMPLE_CALLBACK fn; void *arg; } PoolCall;
 static void *pool_start(void *p)
 {
+#ifdef __ANDROID__
+    void gt_android_thread_others(void);
+    gt_android_thread_others();         /* main.c PRIME_CORE */
+#endif
     PoolCall c = *(PoolCall *)p;
     free(p);
     c.fn(NULL, c.arg);
