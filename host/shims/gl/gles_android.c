@@ -28,7 +28,12 @@
 static EGLDisplay dpy = EGL_NO_DISPLAY;
 static EGLConfig cfg;
 static EGLContext first = EGL_NO_CONTEXT;
-static volatile LONG owner;                /* the thread id with the window's surface current, or 0 */
+static volatile LONG owner;
+
+/* per context: a vertex array object belongs to the context that made it (and a context made without a share
+   group shares nothing), so each context that presents gets its own program, buffer and vertex array */
+typedef struct { EGLContext ctx; u32 prog, vao, vbo; } Quad;
+static Quad quads[8];                /* the thread id with the window's surface current, or 0 */
 
 void *gt_gl_current(void) { return (void *)eglGetCurrentContext(); }
 
@@ -69,6 +74,9 @@ void gla_destroy(SDL_GLContext c)
         return;
     if (eglGetCurrentContext() == (EGLContext)c)
         gla_make_current(NULL);
+    for (int i = 0; i < 8; i++)
+        if (quads[i].ctx == (EGLContext)c)
+            quads[i].ctx = NULL;
     if ((EGLContext)c == first)
         return;                            /* SDL's: kept for the run, as eagl.c keeps first_gl */
     eglDestroyContext(dpy, (EGLContext)c);
@@ -173,6 +181,26 @@ static u32 q_shader(u32 kind, const char *src)
     return sh;
 }
 
+static void q_init(void);
+static void q_select(void)
+{
+    EGLContext c = eglGetCurrentContext();
+    int free_ = -1;
+    for (int i = 0; i < 8; i++) {
+        if (quads[i].ctx == c) {
+            q_prog = quads[i].prog, q_vao = quads[i].vao, q_vbo = quads[i].vbo;
+            return;
+        }
+        if (!quads[i].ctx && free_ < 0)
+            free_ = i;
+    }
+    q_init();
+    if (free_ < 0)
+        free_ = 0;                          /* more than 8 presenting contexts: the oldest slot is reused */
+    quads[free_] = (Quad){c, q_prog, q_vao, q_vbo};
+    rt_log("[egl] present's quad made for context %p\n", (void *)c);
+}
+
 static void q_init(void)
 {
     static const char vs[] =
@@ -216,8 +244,7 @@ void gla_quad_save(void)
 void gla_quad_draw(u32 tex, const float *vx, const float *vy, int W, int H)
 {
     static const float st[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
-    if (!q_prog)
-        q_init();
+    q_select();
     gles_bind_fb(GL_FRAMEBUFFER, 0);
     p_glViewport(0, 0, (u32)W, (u32)H);
     for (int i = 0; i < 5; i++)

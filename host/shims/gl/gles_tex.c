@@ -16,6 +16,7 @@
 
 /* formats */
 
+#if GT_GL_DESKTOP
 static u32 tex_internal(u32 internal, u32 format, u32 type)
 {
     (void)type;
@@ -27,7 +28,50 @@ static u32 tex_internal(u32 internal, u32 format, u32 type)
     (void)format;
     return internal;
 }
+#endif
 
+#if !GT_GL_DESKTOP
+/* OpenGL ES (Android): the formats are ES's own.  BGRA (Apple's form: internal GL_RGBA, format GL_BGRA_EXT) is
+   EXT_texture_format_BGRA8888's when the GPU has it (internal GL_BGRA_EXT too, so the game's glTexSubImage2D of
+   BGRA rows fits the texture); without it the rows are turned to RGBA here. */
+static int es_bgra = -1;
+void h_glTexImage2D(u32 target, u32 level, u32 internal, u32 w, u32 h, u32 border, u32 format, u32 type, u32 pixels)
+{
+    if (format == GL_BGRA_EXT && type == GL_UNSIGNED_BYTE) {
+        if (es_bgra < 0) {
+            const char *e = (const char *)GP(p_glGetString(GL_EXTENSIONS));
+            es_bgra = e && strstr(e, "GL_EXT_texture_format_BGRA8888") != NULL;
+            rt_log("[gl] BGRA textures: %s\n", es_bgra ? "the GPU's own" : "turned to RGBA");
+        }
+        if (es_bgra)
+            internal = GL_BGRA_EXT;
+        else {
+            u8 *rgba = NULL;
+            if (pixels && (rgba = malloc((size_t)w * h * 4))) {
+                const u8 *src = GP(pixels);
+                for (size_t i = 0, n = (size_t)w * h; i < n; i++) {
+                    rgba[i * 4 + 0] = src[i * 4 + 2];
+                    rgba[i * 4 + 1] = src[i * 4 + 1];
+                    rgba[i * 4 + 2] = src[i * 4 + 0];
+                    rgba[i * 4 + 3] = src[i * 4 + 3];
+                }
+            }
+            p_glTexImage2D(target, level, GL_RGBA, w, h, border, GL_RGBA, type, rgba ? GA(rgba) : 0);
+            free(rgba);
+            glx_tex_level(target, level);
+            return;
+        }
+    } else if (internal == GL_BGRA_EXT)
+        internal = GL_RGBA;
+    p_glTexImage2D(target, level, internal, w, h, border, format, type, pixels);
+    glx_tex_level(target, level);
+}
+
+void h_glRenderbufferStorage(u32 target, u32 internal, u32 w, u32 h)
+{
+    p_glRenderbufferStorage(target, internal, w, h);   /* GL_RGB565, depth, stencil: ES's own */
+}
+#else
 void h_glTexImage2D(u32 target, u32 level, u32 internal, u32 w, u32 h, u32 border, u32 format, u32 type, u32 pixels)
 {
     if (type == GL_HALF_FLOAT_OES)
@@ -42,6 +86,7 @@ void h_glRenderbufferStorage(u32 target, u32 internal, u32 w, u32 h)
         internal = GL_RGB8;
     p_glRenderbufferStorage(target, internal, w, h);
 }
+#endif
 
 /* PVRTC (GL_IMG_texture_compression_pvrtc)
    The block layout and colour unpacking of Imagination's PVRTC 1 (as in the PowerVR SDK's

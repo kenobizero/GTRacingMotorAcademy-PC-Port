@@ -373,6 +373,14 @@ static void present(Ctx *x)
     p_glEnd();
 #else
     gla_quad_draw(x->tex, vx, vy, W, H);
+    if (frames < 3 || (frames % 600) == 0) {     /* the first frames' picture path, for the log */
+        u32 e = p_glGetError();
+        gles_bind_fb(GL_READ_FRAMEBUFFER, ms ? ms : x->src_fbo);
+        u32 st = p_glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
+        gles_bind_fb(GL_READ_FRAMEBUFFER, 0);
+        rt_log("[eagl] frame %u: renderbuffer %u (%d x %d) -> window %d x %d, read fbo status 0x%x, GL error 0x%x\n",
+               frames, drawable_rb, rb_w, rb_h, W, H, st, e);
+    }
 #endif
     frames++;
     for (int i = 0; i < nshots; i++)

@@ -3,6 +3,9 @@
 #include <stdlib.h>
 #include <string.h>
 #include "plat.h"
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 #include "rt.h"
 
@@ -63,8 +66,12 @@ int rt_vlog(const char *fmt, va_list ap)
     va_end(aq);
     EnterCriticalSection(&log_lock);
     size_t m = rt_scrub(p, (size_t)n);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "GTRacing", "%.*s", (int)m, p);  /* adb logcat -s GTRacing */
+#else
     fwrite(p, 1, m, stderr);
     fflush(stderr);
+#endif
     if (logf) {
         fwrite(p, 1, m, logf);
         fflush(logf);
