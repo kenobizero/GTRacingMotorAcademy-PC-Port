@@ -13,7 +13,7 @@
 #                and the stacks; --wrap below); libmain.so: stub.c, which loads libgame.so below 4 GB.
 #   The Snapdragon 8 Gen 3 and later run 64-bit code only.
 cmake_minimum_required(VERSION 3.22)
-project(gtracing C)
+project(gtracing C CXX)    # CXX: SDL's static library has C++ (hidapi), libgame.so links its runtime
 
 get_filename_component(REPO "${CMAKE_CURRENT_SOURCE_DIR}/../../.." ABSOLUTE)
 set(GEN "${REPO}/build/gen_android")
@@ -97,6 +97,9 @@ endif()
 add_library(${GAME} SHARED $<TARGET_OBJECTS:gt_gen> $<TARGET_OBJECTS:gt_lower> $<TARGET_OBJECTS:gt_game>)
 if(GT64)
   target_link_libraries(game PRIVATE SDL3::SDL3-static GLESv3 EGL android log m dl)
+  # linked as C++: SDL's hidapi (hid.cpp) needs the C++ runtime (ANDROID_STL c++_static), whose operator new
+  # and delete call malloc and free: lowmem.c's too
+  set_target_properties(game PROPERTIES LINKER_LANGUAGE CXX)
   # lowmem.c: the heap and the threads' stacks of everything in libgame.so below 4 GB (malloc, calloc, realloc
   # and free are build.py's wraps already: liveblocks.c, which calls lowmem.c's allocator on this ABI)
   set(LOWMEM_WRAPS memalign posix_memalign aligned_alloc malloc_usable_size strdup strndup pthread_create)
