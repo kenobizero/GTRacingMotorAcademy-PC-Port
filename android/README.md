@@ -97,6 +97,10 @@ defaults are below), the log `GTRacing/gtracing.log`.
 | `GT_DEVICE` | `ipad3` | the Retina art; `ipad2` uses less memory |
 | `GT_MSAA` | `0` | a resolve pass is expensive on a phone's tiled GPU; `2` or `4` on a fast one |
 | `GT_POSTFX` | `4` (as on the PC) | Enhanced; every mode is there (its passes are drawn with OpenGL ES). `0` or `1` for more frames on a slow phone |
+| `GT_FPS` | `60` | the frame rate: `30`, `60`, `0` uncapped (vsync on: as fast as the screen refreshes, 120 on a 120 Hz phone). Options > Display > Frame Rate (the Full Screen row on the PC) |
+| `GT_FXAA` | `0` | FXAA over the picture as it is drawn on the screen, alone or over MSAA. Options > Display > Anti-aliasing: Off, FXAA, 2x, 4x, 4x + FXAA, Auto |
+| `GT_VSYNC` | `0` | the frame cap paces the frames (a capped rate only; uncapped always waits for the screen) |
+| `GT_BIG_CORES`, `GT_PERF_HINT` | `1`, `1` | the game's threads on the fast cores; the frame thread's clocks raised to keep the frame rate (Android 13+) |
 | `GT_GPU_PROFILE` | `igpu` | the lighter motion blur; `full` for the iPad 2's full one |
 | `GT_TILT_INVERT` | `0` | `1` turns the tilt steering's direction, for a phone whose sensor axes differ |
 

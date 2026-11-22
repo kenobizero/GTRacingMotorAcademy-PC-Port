@@ -32,7 +32,7 @@ static volatile LONG owner;
 
 /* per context: a vertex array object belongs to the context that made it (and a context made without a share
    group shares nothing), so each context that presents gets its own program, buffer and vertex array */
-typedef struct { EGLContext ctx; u32 prog, vao, vbo; } Quad;
+typedef struct { EGLContext ctx; u32 prog, vao, vbo, fxaa; int fxaa_rcp; } Quad;
 static Quad quads[8];                /* the thread id with the window's surface current, or 0 */
 
 void *gt_gl_current(void) { return (void *)eglGetCurrentContext(); }
@@ -168,7 +168,8 @@ void gla_swap_interval(int n)
 
 /* present()'s quad: the frame's texture drawn over the window with a program and vertex array of its own; the
    state it changes is saved first and put back after (desktop OpenGL's glPushAttrib, which ES has not) */
-static u32 q_prog, q_vao, q_vbo;
+static u32 q_prog, q_vao, q_vbo, q_fxaa;
+static int q_fxaa_rcp = -1;
 static struct {
     int cap[5];
     int vp[4];
@@ -202,6 +203,7 @@ static void q_select(void)
     for (int i = 0; i < 8; i++) {
         if (quads[i].ctx == c) {
             q_prog = quads[i].prog, q_vao = quads[i].vao, q_vbo = quads[i].vbo;
+            q_fxaa = quads[i].fxaa, q_fxaa_rcp = quads[i].fxaa_rcp;
             return;
         }
         if (!quads[i].ctx && free_ < 0)
@@ -210,8 +212,50 @@ static void q_select(void)
     q_init();
     if (free_ < 0)
         free_ = 0;                          /* more than 8 presenting contexts: the oldest slot is reused */
-    quads[free_] = (Quad){c, q_prog, q_vao, q_vbo};
+    quads[free_] = (Quad){c, q_prog, q_vao, q_vbo, q_fxaa, q_fxaa_rcp};
     rt_log("[egl] present's quad made for context %p\n", (void *)c);
+}
+
+/* FXAA (GT_FXAA=1; Options > Display > Anti-aliasing, alone or over MSAA): the edges smoothed as the frame is drawn
+   over the window.  The frame's luma at the pixel and its four diagonal neighbours finds an edge and its
+   direction; two and four taps along that direction are blended, the four kept unless they step outside the
+   neighbours' luma range.  One pass, 9 texture reads a pixel: ~0.3 ms at 2376 x 1080 on an Adreno 650. */
+static const char fxaa_fs[] =
+    "#version 100\n"
+    "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif\n"
+    "uniform sampler2D s;\nuniform vec2 r;\nvarying vec2 v;\n"
+    "vec3 at(vec2 o) { return texture2D(s, v + o).rgb; }\n"
+    "void main() {\n"
+    "  const vec3 L = vec3(0.299, 0.587, 0.114);\n"
+    "  vec3 cM = at(vec2(0.0));\n"
+    "  float nw = dot(at(vec2(-r.x, -r.y)), L), ne = dot(at(vec2(r.x, -r.y)), L);\n"
+    "  float sw = dot(at(vec2(-r.x, r.y)), L), se = dot(at(vec2(r.x, r.y)), L), m = dot(cM, L);\n"
+    "  float lo = min(m, min(min(nw, ne), min(sw, se))), hi = max(m, max(max(nw, ne), max(sw, se)));\n"
+    "  if (hi - lo < max(0.0312, hi * 0.125)) { gl_FragColor = vec4(cM, 1.0); return; }\n"
+    "  vec2 d = vec2((sw + se) - (nw + ne), (nw + sw) - (ne + se));\n"
+    "  float red = max((nw + ne + sw + se) * 0.03125, 1.0 / 128.0);\n"
+    "  float k = 1.0 / (min(abs(d.x), abs(d.y)) + red);\n"
+    "  d = clamp(d * k, vec2(-8.0), vec2(8.0)) * r;\n"
+    "  vec3 a = 0.5 * (at(d * (1.0 / 3.0 - 0.5)) + at(d * (2.0 / 3.0 - 0.5)));\n"
+    "  vec3 b = a * 0.5 + 0.25 * (at(d * -0.5) + at(d * 0.5));\n"
+    "  float lb = dot(b, L);\n"
+    "  gl_FragColor = vec4((lb < lo || lb > hi) ? a : b, 1.0);\n"
+    "}\n";
+
+static int fxaa_on = -1;
+int gla_fxaa_now(void)
+{
+    if (fxaa_on < 0) {
+        const char *e = getenv("GT_FXAA");
+        fxaa_on = e && *e == '1';
+        rt_log("[fxaa] %s\n", fxaa_on ? "on (GT_FXAA=1)" : "off");
+    }
+    return fxaa_on;
+}
+void gla_set_fxaa(int on)
+{
+    fxaa_on = !!on;
+    rt_log("[fxaa] %s (Options > Display)\n", on ? "on" : "off");
 }
 
 static void q_init(void)
@@ -232,6 +276,22 @@ static void q_init(void)
     p_glLinkProgram(q_prog);
     p_glUseProgram(q_prog);
     p_glUniform1i((u32)p_glGetUniformLocation(q_prog, GA("s")), 0);
+    q_fxaa = p_glCreateProgram();
+    p_glAttachShader(q_fxaa, q_shader(GL_VERTEX_SHADER, vs));
+    p_glAttachShader(q_fxaa, q_shader(GL_FRAGMENT_SHADER, fxaa_fs));
+    p_glBindAttribLocation(q_fxaa, 0, GA("p"));
+    p_glBindAttribLocation(q_fxaa, 1, GA("t"));
+    p_glLinkProgram(q_fxaa);
+    int ok = 0;
+    p_glGetProgramiv(q_fxaa, GL_LINK_STATUS, GA(&ok));
+    if (ok) {
+        p_glUseProgram(q_fxaa);
+        p_glUniform1i((u32)p_glGetUniformLocation(q_fxaa, GA("s")), 0);
+        q_fxaa_rcp = (int)p_glGetUniformLocation(q_fxaa, GA("r"));
+    } else {
+        rt_log("[fxaa] the shader did not link: FXAA off in this context\n");
+        q_fxaa = 0, q_fxaa_rcp = -1;
+    }
     p_glGenVertexArrays(1, GA(&q_vao));
     p_glGenBuffers(1, GA(&q_vbo));
     p_glBindVertexArray(q_vao);
@@ -254,7 +314,7 @@ void gla_quad_save(void)
 }
 
 /* the texture's corners at vx / vy (window coordinates, -1..1), the window W x H pixels */
-void gla_quad_draw(u32 tex, const float *vx, const float *vy, int W, int H)
+void gla_quad_draw(u32 tex, int tw, int th, const float *vx, const float *vy, int W, int H)
 {
     static const float st[4][2] = {{0, 0}, {1, 0}, {1, 1}, {0, 1}};
     q_select();
@@ -265,7 +325,11 @@ void gla_quad_draw(u32 tex, const float *vx, const float *vy, int W, int H)
     p_glColorMask(1, 1, 1, 1);
     p_glClearColor(0, 0, 0, 1);
     p_glClear(GL_COLOR_BUFFER_BIT);
-    p_glUseProgram(q_prog);
+    if (q_fxaa && gla_fxaa_now() && tw > 0 && th > 0) {
+        p_glUseProgram(q_fxaa);
+        p_glUniform2f((u32)q_fxaa_rcp, 1.0f / (float)tw, 1.0f / (float)th);
+    } else
+        p_glUseProgram(q_prog);
     p_glActiveTexture(GL_TEXTURE0);
     p_glBindTexture(GL_TEXTURE_2D, tex);
     /* a strip: corners 0 1 3 2 */

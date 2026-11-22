@@ -24,7 +24,9 @@ int gla_present_begin(void);            /* 0: nothing can be shown now */
 void gla_swap(void);
 void gla_swap_interval(int n);
 void gla_quad_save(void);
-void gla_quad_draw(u32 tex, const float *vx, const float *vy, int W, int H);
+void gla_quad_draw(u32 tex, int tw, int th, const float *vx, const float *vy, int W, int H);
+int gla_fxaa_now(void);
+void gla_set_fxaa(int on);
 void gla_quad_restore(void);
 #endif
 

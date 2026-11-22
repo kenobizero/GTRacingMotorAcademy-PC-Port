@@ -58,6 +58,32 @@
 #define SWF_VISIBLE 0xab
 
 int glx_msaa_now(void);
+#ifdef __ANDROID__
+/* Android: the Full Screen row is Frame Rate (an app is always full screen): 30 / 60 / Uncapped (eagl.c); and
+   Anti-aliasing has FXAA (gles_android.c), alone or over 4x MSAA */
+int eagl_frame_rate(void);
+void eagl_set_frame_rate(int fps);
+int gla_fxaa_now(void);
+void gla_set_fxaa(int on);
+static const int fr_opts[] = {30, 60, 0};
+typedef struct { const char *label; int msaa, fxaa; } AaOpt;
+static const AaOpt aa_and[] = {{"Off", 0, 0}, {"FXAA", 0, 1}, {"2x MSAA", 2, 0}, {"4x MSAA", 4, 0},
+                               {"4x + FXAA", 4, 1}};
+#define NAA_AND 5
+static const char *fr_text(void)
+{
+    int f = eagl_frame_rate();
+    return f == 30 ? "30 fps" : f == 0 ? "Uncapped" : "60 fps";
+}
+static int aa_and_index(void)
+{
+    int m = glx_msaa_now(), f = gla_fxaa_now(), best = 0;
+    for (int i = 0; i < NAA_AND; i++)
+        if (aa_and[i].msaa <= m && aa_and[i].fxaa == f)
+            best = i;
+    return best;
+}
+#endif
 int glx_msaa_max(void);
 float glx_aniso_now(void);
 float glx_aniso_max(void);
@@ -268,9 +294,18 @@ static void values(u32 pl)
         snprintf(t, sizeof t, "%s", res_custom);
     set_text(pl, "Sel1.txtSelectorType", t);
     set_text(pl, "Sel2.txtSelectorType", wide_sel >= 0 ? wide_opts[wide_sel].label : wide_custom);
+#ifdef __ANDROID__
+    set_text(pl, "Sel3.txtSelectorType", fr_text());
+    if (aa_auto)
+        snprintf(t, sizeof t, "Auto (%dx)%s", gpu_auto_msaa(), gla_fxaa_now() ? " + FXAA" : "");
+    else
+        snprintf(t, sizeof t, "%s", aa_and[aa_and_index()].label);
+    set_text(pl, "Sel4.txtSelectorType", t);
+#else
     fs_shown = fs_now();
     set_text(pl, "Sel3.txtSelectorType", fs_shown ? "On" : "Off");
     set_text(pl, "Sel4.txtSelectorType", aa_text(t, sizeof t, aa_opts[aa_index()]));
+#endif
     set_text(pl, "Sel6.txtSelectorType", blur_text(t, sizeof t));
     int af = af_opts[af_index()];
     if (af > 1)
@@ -286,7 +321,11 @@ void display_menu_fill(u32 pl)
 {
     set_text(pl, "Title1.typefield", "Resolution:");
     set_text(pl, "Title2.typefield", "Aspect Ratio:");
+#ifdef __ANDROID__
+    set_text(pl, "Title3.typefield", "Frame Rate:");
+#else
     set_text(pl, "Title3.typefield", "Full Screen:");
+#endif
     set_text(pl, "Title4.typefield", "Anti-aliasing:");
     set_text(pl, "Title5.typefield", "Anisotropic:");     /* "... Filtering" takes two lines */
     set_text(pl, "Title6.typefield", "Motion Blur:");
@@ -309,7 +348,11 @@ void display_menu_layout(u32 pl)
     u32 n = find(pl, "ControlsMenu.PCDisplay.Note");
     if (n && *(volatile u8 *)GP(n + SWF_VISIBLE) != (u8)!pending())
         *(volatile u8 *)GP(n + SWF_VISIBLE) = (u8)!pending();
+#ifdef __ANDROID__
+    int fs = fs_shown;                  /* the row is Frame Rate */
+#else
     int fs = fs_now();                  /* Alt+Enter while the page shows */
+#endif
     if (fs != fs_shown) {
         fs_shown = fs;
         set_text(pl, "Sel3.txtSelectorType", fs ? "On" : "Off");
@@ -388,6 +431,48 @@ void display_menu_click(u32 pl, const char *ps)
         wide_sel = wide_sel < 0 ? 0 : (wide_sel + dir + NWIDE) % NWIDE;
         ini_set("GT_WIDE", wide_opts[wide_sel].value,
                 "the screen's shape: 1024 4:3, 1229 16:10, 1366 16:9, 1792 21:9, monitor (Options > Display)");
+#ifdef __ANDROID__
+    } else if (row == 3) {
+        int f = eagl_frame_rate(), i = f == 30 ? 0 : f == 0 ? 2 : 1;
+        i = (i + dir + 3) % 3;
+        eagl_set_frame_rate(fr_opts[i]);
+        char v[8];
+        snprintf(v, sizeof v, "%d", fr_opts[i]);
+        ini_set("GT_FPS", v, "the frame rate: 30, 60, 0 uncapped (the screen's refresh) (Options > Display > Frame Rate)");
+        set_text(pl, "Sel3.txtSelectorType", fr_text());
+        return;
+    } else if (row == 4) {
+        /* Off, FXAA, 2x, 4x, 4x + FXAA (the MSAA ones up to the driver's most), then Auto (4x, FXAA as it was) */
+        int mx = glx_msaa_max(), n = 0, idx[NAA_AND];
+        for (int k = 0; k < NAA_AND; k++)
+            if (!mx || aa_and[k].msaa <= mx)
+                idx[n++] = k;
+        int cur = aa_and_index(), i = n;
+        if (!aa_auto)
+            for (int k = 0; k < n; k++)
+                if (idx[k] == cur)
+                    i = k;
+        i = (i + dir + n + 1) % (n + 1);
+        aa_auto = i == n;
+        int samples = aa_auto ? gpu_auto_msaa() : aa_and[idx[i]].msaa;
+        if (mx && samples > mx)
+            samples = mx;
+        glx_set_msaa(samples);
+        if (!aa_auto)
+            gla_set_fxaa(aa_and[idx[i]].fxaa);
+        char v[8];
+        snprintf(v, sizeof v, "%d", samples);
+        ini_set("GT_MSAA", aa_auto ? "auto" : v, "anti-aliasing samples: 0 off, 2, 4, 8, auto (Options > Display)");
+        ini_set("GT_FXAA", gla_fxaa_now() ? "1" : "0", "FXAA: 1 on, 0 off (Options > Display > Anti-aliasing)");
+        char t[32];
+        if (aa_auto)
+            snprintf(t, sizeof t, "Auto (%dx)%s", samples, gla_fxaa_now() ? " + FXAA" : "");
+        else
+            snprintf(t, sizeof t, "%s", aa_and[idx[i]].label);
+        set_text(pl, "Sel4.txtSelectorType", t);
+        rt_log("[display] anti-aliasing %s\n", t);
+        return;
+#endif
     } else if (row == 3) {
         int fs = !fs_now();             /* two values: either arrow switches */
         display_fullscreen(fs);

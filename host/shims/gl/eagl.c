@@ -19,6 +19,9 @@
 #include "gles_internal.h"
 #include "ui.h"
 
+int eagl_frame_rate(void);
+void eagl_set_frame_rate(int fps);
+
 typedef struct { u32 isa, api, sharegroup, multi; SDL_GLContext gl; u32 src_fbo, dst_fbo, tex; int tw, th; } Ctx;
 #define CX(o) ((Ctx *)GP(o))
 
@@ -66,7 +69,8 @@ static id init_api(id self, u32 api, u32 share)
 #if GT_GL_DESKTOP
         SDL_GL_SetSwapInterval(vs && *vs == '0' ? 0 : 1);
 #else
-        gla_swap_interval(vs && *vs == '0' ? 0 : 1);
+        /* uncapped (GT_FPS=0, Options > Display > Frame Rate): vsync holds it to the screen's refresh */
+        gla_swap_interval(vs && *vs == '0' && eagl_frame_rate() ? 0 : 1);
 #endif
     }
     gles_context_created();
@@ -242,6 +246,29 @@ static double pt_now(void)
 }
 static void pt_add(int k, double t0) { if (GT_DEV && pt_on > 0) pt_acc[k] += pt_now() - t0; }
 
+/* the frame cap (GT_FPS; Options > Display > Frame Rate on Android) */
+static double next_t, period = -1;
+static volatile int vsync_want = -1;    /* a swap interval for the next present to set, -1 none */
+
+/* fps: 30, 60 or 0 (uncapped: vsync on, as fast as the screen refreshes) */
+void eagl_set_frame_rate(int fps)
+{
+    period = fps > 0 ? 1.0 / fps : 0;
+    next_t = 0;
+    const char *vs = getenv("GT_VSYNC");
+    vsync_want = fps > 0 ? (vs && *vs == '1') : 1;
+    rt_log("[eagl] frame rate: %s\n", fps > 0 ? (fps == 30 ? "30" : "60") : "uncapped (the screen's refresh)");
+}
+
+int eagl_frame_rate(void)
+{
+    if (period < 0) {
+        int fps = rt_setting_int("GT_FPS", 60, 0, 1000);
+        period = fps > 0 ? 1.0 / fps : 0;
+    }
+    return period > 0 ? (int)(1.0 / period + 0.5) : 0;
+}
+
 static void present(Ctx *x)
 {
     if (!drawable_rb || rb_w <= 0 || rb_h <= 0)
@@ -377,7 +404,7 @@ static void present(Ctx *x)
     }
     p_glEnd();
 #else
-    gla_quad_draw(x->tex, vx, vy, W, H);
+    gla_quad_draw(x->tex, x->tw, x->th, vx, vy, W, H);
 #if !GT_GL_DESKTOP
     {
         /* the frame rate, every 600 frames: with the low reads the fault handler did meanwhile (each a signal,
@@ -415,11 +442,16 @@ static void present(Ctx *x)
             save_shot(W, H);
     /* the iPad shows at most 60 frames a second; faster screens would run the game faster than that
        (GT_FPS=n changes the cap, 0 = none) */
-    static double next_t, period = -1;
     if (period < 0) {
         int fps = rt_setting_int("GT_FPS", 60, 0, 1000);   /* 0: no cap */
         period = fps > 0 ? 1.0 / fps : 0;
     }
+#if !GT_GL_DESKTOP
+    if (vsync_want >= 0) {                /* Options > Display > Frame Rate: the window's surface is current here */
+        gla_swap_interval(vsync_want);
+        vsync_want = -1;
+    }
+#endif
     /* BACKGROUND_THROTTLE (uikit.c): behind other windows or minimized, a lower cap (also with GT_FPS=0) */
     int bg = ui_background_fps();
     double per = bg > 0 && (period <= 0 || period < 1.0 / bg) ? 1.0 / bg : period;
