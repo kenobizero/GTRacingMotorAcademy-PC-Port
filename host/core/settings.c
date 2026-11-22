@@ -14,7 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "rt.h"
 
@@ -91,7 +91,7 @@ static void load_file(const char *exe_dir)
     if (alt && *alt)
         snprintf(ini_path, sizeof ini_path, "%s", alt);
     else
-        snprintf(ini_path, sizeof ini_path, "%s\\gtracing.ini", exe_dir);
+        snprintf(ini_path, sizeof ini_path, "%s" GT_SEP_S "gtracing.ini", exe_dir);
     FILE *f = fopen(ini_path, "r");
     if (!f)
         return;
@@ -142,6 +142,17 @@ static void load_file(const char *exe_dir)
    restart (the new run applies them again). */
 static void load_defaults(void)
 {
+#if GT_ANDROID
+    /* Android: a phone's screen, its touch screen and a mobile GPU.  The iPad 3's art at the screen's own size and
+       shape, the game's own touch controls (Touch Screen On), no MSAA (a resolve blit costs a tiler a whole extra
+       pass) and no PostFX (its passes are drawn with desktop OpenGL) */
+    static const char *const defaults[][2] = {
+        {"GT_DEVICE", "ipad3"}, {"GT_RESOLUTION", "monitor"}, {"GT_WIDE", "monitor"},
+        {"GT_FULLSCREEN", "1"}, {"GT_MSAA", "0"}, {"GT_POSTFX", "0"}, {"GT_TOUCH_SCREEN", "1"},
+        {"GT_GPU_PROFILE", "igpu"}, {"GT_CURSOR", "0"},
+        {"GT_CLOUD_BOARD_URL", "https://gt-redbull-board.gtracing-pc.workers.dev"},
+    };
+#else
     static const char *const defaults[][2] = {
         {"GT_DEVICE", "ipad3"}, {"GT_RESOLUTION", "monitor"}, {"GT_WIDE", "monitor"},
         /* GT_MSAA auto (GPU_PROFILE, optimisation pass 5, gpuprofile.c): 4 on any GPU */
@@ -152,6 +163,7 @@ static void load_defaults(void)
            GT_CLOUD_BOARD=0 keeps the board offline, another URL picks another server */
         {"GT_CLOUD_BOARD_URL", "https://gt-redbull-board.gtracing-pc.workers.dev"},
     };
+#endif
     for (size_t i = 0; i < sizeof defaults / sizeof defaults[0]; i++) {
         const char *k = defaults[i][0], *v = getenv(k);
         if (v && *v)

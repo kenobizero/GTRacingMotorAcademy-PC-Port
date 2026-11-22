@@ -38,9 +38,7 @@
    the multiplayer modes are UDP only (no TCP connect in any LAN / Online test), so socket(SOCK_STREAM)
    fails with ENETUNREACH, as with no network at all.  GT_LAN_TCP=1 gives TCP sockets back
    (testing). */
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
+#include "plat_net.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -73,6 +71,7 @@ static void lan_init(void)
         return;
     const char *e = getenv("GT_LAN_MULTIPLAYER");
     int on = !(e && *e == '0');
+#ifdef _WIN32
     if (on) {
         WSADATA wd;
         if (WSAStartup(MAKEWORD(2, 2), &wd)) {
@@ -80,6 +79,7 @@ static void lan_init(void)
             on = 0;
         }
     }
+#endif
     nlog = dev_getenv("GT_NET_LOG") != NULL;
     e = dev_getenv("GT_LAN_IP");
     if (e && *e)
@@ -132,6 +132,31 @@ static void adapters_refresh(void)
     if (test_ip) {
         got[0] = (Adapter){test_ip, htonl(0xff000000u), 1, "en0"};
         n = 1;
+#ifndef _WIN32
+    } else {
+        /* Android: the interfaces that are up (wlan, eth and the like first: the ones a LAN game goes over; the
+           mobile data interfaces have no broadcast) */
+        struct ifaddrs *ifs = NULL;
+        if (getifaddrs(&ifs) == 0) {
+            for (int pass = 0; pass < 2; pass++)
+                for (struct ifaddrs *i = ifs; i && n < 16; i = i->ifa_next) {
+                    if (!i->ifa_addr || i->ifa_addr->sa_family != AF_INET || !(i->ifa_flags & IFF_UP) ||
+                        (i->ifa_flags & IFF_LOOPBACK))
+                        continue;
+                    int lan = (i->ifa_flags & IFF_BROADCAST) != 0;
+                    if (lan != (pass == 0))
+                        continue;
+                    Adapter *d = &got[n];
+                    d->addr = ((struct sockaddr_in *)i->ifa_addr)->sin_addr.s_addr;
+                    d->mask = i->ifa_netmask ? ((struct sockaddr_in *)i->ifa_netmask)->sin_addr.s_addr : 0xffffffffu;
+                    d->gateway = lan;
+                    snprintf(d->name, sizeof d->name, "en%d", n & 15);
+                    n++;
+                }
+            freeifaddrs(ifs);
+        }
+    }
+#else
     } else {
         ULONG len = 16 * 1024;
         IP_ADAPTER_ADDRESSES *aa = malloc(len);
@@ -168,6 +193,7 @@ static void adapters_refresh(void)
             }
         free(aa);
     }
+#endif
     AcquireSRWLockExclusive(&adapters_lock);
     memcpy(adapters, got, sizeof got);
     n_adapters = n;
@@ -540,9 +566,11 @@ u16 net_p2p_open(u16 port)
         w.sin_port = 0;                                           /* taken: any port */
         bind(tun, (struct sockaddr *)&w, sizeof w);
     }
+#ifdef _WIN32
     BOOL no = FALSE;
     DWORD got;
     WSAIoctl(tun, _WSAIOW(IOC_VENDOR, 12), &no, sizeof no, NULL, 0, &got, NULL, NULL);
+#endif
     u_long nb = 1;
     ioctlsocket(tun, FIONBIO, &nb);
     int wl = sizeof w;
@@ -626,9 +654,11 @@ static u32 net_socket_new(int type)
         return werr();
     if (type != 1) {
         /* Windows reports an ICMP "port unreachable" as WSAECONNRESET on the next recvfrom; BSD does not */
+#ifdef _WIN32
         BOOL no = FALSE;
         DWORD got;
         WSAIoctl(h, _WSAIOW(IOC_VENDOR, 12) /* SIO_UDP_CONNRESET */, &no, sizeof no, NULL, 0, &got, NULL, NULL);
+#endif
     }
     AcquireSRWLockExclusive(&socks_lock);
     for (int i = 0; i < SOCK_MAX; i++)
@@ -870,6 +900,7 @@ u32 h_select(u32 nfds, u32 r, u32 wr, u32 e, u32 t)
     fd_set win[3];
     u32 fds[3][64];
     int nf[3] = {0, 0, 0}, any = 0;
+    SOCKET maxfd = 0;                        /* POSIX's select counts the descriptors (Winsock ignores it) */
     if (nfds > 1024)
         nfds = 1024;
     for (int k = 0; k < 3; k++) {
@@ -881,6 +912,8 @@ u32 h_select(u32 nfds, u32 r, u32 wr, u32 e, u32 t)
                 Sock *s = sk(fd);
                 if (s && nf[k] < 64) {
                     FD_SET(s->s, &win[k]);
+                    if (s->s > maxfd)
+                        maxfd = s->s;
                     fds[k][nf[k]++] = fd;
                     any = 1;
                 }
@@ -910,7 +943,7 @@ u32 h_select(u32 nfds, u32 r, u32 wr, u32 e, u32 t)
             Sleep((DWORD)(tv.tv_sec * 1000 + tv.tv_usec / 1000));
         got = 0;
     } else {
-        got = select(0, &win[0], &win[1], &win[2], tp);
+        got = select((int)maxfd + 1, &win[0], &win[1], &win[2], tp);
         if (got < 0)
             return werr();
     }
@@ -935,6 +968,45 @@ u32 h_select(u32 nfds, u32 r, u32 wr, u32 e, u32 t)
     return (u32)got;
 }
 
+#ifndef _WIN32
+/* Darwin's socket and IP option numbers (Winsock has the same as BSD) as Linux's */
+static int so_opt(u32 opt)
+{
+    switch (opt) {
+    case 0x0004: return SO_REUSEADDR;
+    case 0x0008: return SO_KEEPALIVE;
+    case 0x0010: return SO_DONTROUTE;
+    case 0x0020: return SO_BROADCAST;
+    case 0x0080: return SO_LINGER;
+    case 0x0100: return SO_OOBINLINE;
+    case 0x1001: return SO_SNDBUF;
+    case 0x1002: return SO_RCVBUF;
+    case 0x1003: return SO_SNDLOWAT;
+    case 0x1004: return SO_RCVLOWAT;
+    case 0x1005: return SO_SNDTIMEO;
+    case 0x1006: return SO_RCVTIMEO;
+    case 0x1007: return SO_ERROR;
+    case 0x1008: return SO_TYPE;
+    }
+    return -1;
+}
+static int ip_opt(u32 level, u32 opt)
+{
+    if (level != 0)                          /* IPPROTO_IP; TCP_NODELAY (6, 1) is the same number */
+        return (int)opt;
+    switch (opt) {
+    case 3: return IP_TOS;
+    case 4: return IP_TTL;
+    case 9: return IP_MULTICAST_IF;
+    case 10: return IP_MULTICAST_TTL;
+    case 11: return IP_MULTICAST_LOOP;
+    case 12: return IP_ADD_MEMBERSHIP;
+    case 13: return IP_DROP_MEMBERSHIP;
+    }
+    return (int)opt;
+}
+#endif
+
 u32 h_setsockopt(u32 fd, u32 level, u32 opt, u32 v, u32 n)
 {
     Sock *s = sk(fd);
@@ -956,14 +1028,32 @@ u32 h_setsockopt(u32 fd, u32 level, u32 opt, u32 v, u32 n)
         }
         case 0x1005:                         /* SO_SNDTIMEO, SO_RCVTIMEO: a timeval there, ms here */
         case 0x1006: {
+#ifndef _WIN32
+            struct timeval tv = {(time_t)rd32(v), (suseconds_t)rd32(v + 4)};
+            r = setsockopt(s->s, SOL_SOCKET, so_opt(opt), &tv, sizeof tv);
+#else
             DWORD ms = rd32(v) * 1000 + rd32(v + 4) / 1000;
             r = setsockopt(s->s, SOL_SOCKET, (int)opt, (const char *)&ms, sizeof ms);
+#endif
             return r ? werr() : 0;
         }
         }
+#ifndef _WIN32
+        if (opt == SO_REUSEADDR)             /* SO_REUSEPORT above: already Linux's number */
+            opt = 0x0004;
+        int lo = so_opt(opt);
+        if (lo < 0)
+            return 0;                        /* an option Linux has not: as if taken */
+        r = setsockopt(s->s, SOL_SOCKET, lo, (const char *)&iv, sizeof iv);
+#else
         r = setsockopt(s->s, SOL_SOCKET, (int)opt, (const char *)&iv, sizeof iv);
+#endif
     } else {
+#ifndef _WIN32
+        r = setsockopt(s->s, (int)level, ip_opt(level, opt), GP(v), (socklen_t)n);
+#else
         r = setsockopt(s->s, (int)level, (int)opt, GP(v), (int)n);    /* IP_*, TCP_NODELAY: same numbers */
+#endif
     }
     if (GT_DEV && GT_DEV && nlog)
         rt_log("[net] setsockopt(%u, 0x%x, 0x%x, %d) = %d\n", fd, level, opt, iv, r ? WSAGetLastError() : 0);
@@ -975,8 +1065,16 @@ u32 h_getsockopt(u32 fd, u32 level, u32 opt, u32 v, u32 n)
     if (!s)
         return fail_with(9);
     int iv = 0, il = sizeof iv;
+#ifndef _WIN32
+    int lo = level == 0xffff ? so_opt(opt) : ip_opt(level, opt);
+    if (lo < 0)
+        return fail_with(42);                /* ENOPROTOOPT */
+    if (getsockopt(s->s, level == 0xffff ? SOL_SOCKET : (int)level, lo, (char *)&iv, (socklen_t *)&il))
+        return werr();
+#else
     if (getsockopt(s->s, level == 0xffff ? SOL_SOCKET : (int)level, (int)opt, (char *)&iv, &il))
         return werr();
+#endif
     if (level == 0xffff && opt == 0x1007 && iv)       /* SO_ERROR */
         iv = (int)werr_map(iv);
     if (v)

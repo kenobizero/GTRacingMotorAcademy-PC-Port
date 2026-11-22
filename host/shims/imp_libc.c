@@ -2,17 +2,40 @@
    files, time, ctype, compiler helpers.  Most map onto the host CRT; this file has the ones
    whose iOS behaviour or layout differs (struct stat / tm, open flags, RAND_MAX, errno...). */
 #include <ctype.h>
-#include <direct.h>
 #include <errno.h>
 #include <fcntl.h>
+#ifdef _WIN32
+#include <direct.h>
 #include <io.h>
+#else
+/* the Microsoft CRT's names, on POSIX */
+#include <unistd.h>
+#define _O_BINARY 0
+#define _O_RDONLY O_RDONLY
+#define _O_WRONLY O_WRONLY
+#define _O_RDWR O_RDWR
+#define _O_APPEND O_APPEND
+#define _O_CREAT O_CREAT
+#define _O_TRUNC O_TRUNC
+#define _O_EXCL O_EXCL
+#define _S_IREAD 0444
+#define _S_IWRITE 0222
+#define _S_IFDIR S_IFDIR
+#define _open open
+#define _read read
+#define _write write
+#define _close close
+#define _lseeki64 lseek64
+#define _stati64 stat64
+#define _fstati64 fstat64
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "abi.h"
 #include "rt.h"
@@ -221,11 +244,13 @@ void h_qsort(CPU *c, u32 base, u32 n, u32 size, u32 cmp)
    still the formatted length).  The same holds for write() to descriptors 1 and 2 and for NSLog (ns_string.c).
    The game's i386 va_list is a plain pointer to its words, so it can be read twice. */
 static int console(u32 f) { return GP(f) == stdout || GP(f) == stderr; }
+#ifdef _WIN32
 static u32 console_vf(const char *fmt, va_list ap)
 {
     int n = rt_vlog(fmt, ap);
     return (u32)(n >= 0 ? n : vsnprintf(NULL, 0, fmt, ap));
 }
+#endif
 static u32 console_n(const void *p, size_t n)
 {
     if (n && rt_log_enabled())
@@ -233,6 +258,54 @@ static u32 console_n(const void *p, size_t n)
     return (u32)n;
 }
 
+#ifndef _WIN32
+/* Android: the host's va_list (AAPCS: a struct, 64-bit values 8-byte aligned) is not the game's (Darwin armv7:
+   words, 64-bit values on any word), so the game's arguments are formatted from its words (ns_format, ns_string.c:
+   the C conversions and NSString's own) and the text written. */
+#include "ns.h"
+static u32 gfmt(char *out, size_t n, const char *fmt, const u32 *w)
+{
+    Buf b = {0};
+    ns_format(&b, fmt, w);
+    if (out && n) {
+        size_t k = b.n < n - 1 ? b.n : n - 1;
+        memcpy(out, b.p ? b.p : "", k);
+        out[k] = 0;
+    }
+    u32 len = b.n;
+    buf_free(&b);
+    return len;
+}
+static u32 gfile(FILE *f, const char *fmt, const u32 *w)
+{
+    Buf b = {0};
+    ns_format(&b, fmt, w);
+    if (b.n)
+        fwrite(b.p, 1, b.n, f);
+    u32 len = b.n;
+    buf_free(&b);
+    return len;
+}
+static u32 gconsole(const char *fmt, const u32 *w)
+{
+    if (!rt_log_enabled())
+        return gfmt(NULL, 0, fmt, w);
+    Buf b = {0};
+    ns_format(&b, fmt, w);
+    if (b.n)
+        rt_log("%.*s", (int)b.n, b.p);
+    u32 len = b.n;
+    buf_free(&b);
+    return len;
+}
+u32 h_printf(u32 fmt, const u32 *va) { return gconsole(S(fmt), va); }
+u32 h_vprintf(u32 fmt, u32 va) { return gconsole(S(fmt), GP(va)); }
+u32 h_fprintf(u32 f, u32 fmt, const u32 *va) { return console(f) ? gconsole(S(fmt), va) : gfile(GP(f), S(fmt), va); }
+u32 h_vfprintf(u32 f, u32 fmt, u32 va)
+{
+    return console(f) ? gconsole(S(fmt), GP(va)) : gfile(GP(f), S(fmt), GP(va));
+}
+#else
 u32 h_printf(u32 fmt, const u32 *va) { return console_vf(S(fmt), VA(va)); }
 u32 h_vprintf(u32 fmt, u32 va) { return console_vf(S(fmt), VA(GP(va))); }
 u32 h_fprintf(u32 f, u32 fmt, const u32 *va)
@@ -243,6 +316,7 @@ u32 h_vfprintf(u32 f, u32 fmt, u32 va)
 {
     return console(f) ? console_vf(S(fmt), VA(GP(va))) : (u32)vfprintf(GP(f), S(fmt), VA(GP(va)));
 }
+#endif
 u32 h_puts(u32 s)
 {
     rt_log("%s\n", S(s));
@@ -277,6 +351,33 @@ u32 h_fputs(u32 s, u32 f)
     rt_log("%s", S(s));
     return 1;
 }
+#ifndef _WIN32
+u32 h_sprintf(u32 buf, u32 fmt, const u32 *va) { return gfmt(W(buf), (size_t)-1, S(fmt), va); }
+u32 h_snprintf(u32 buf, u32 n, u32 fmt, const u32 *va) { return gfmt(W(buf), n, S(fmt), va); }
+u32 h_vsprintf(u32 buf, u32 fmt, u32 va) { return gfmt(W(buf), (size_t)-1, S(fmt), GP(va)); }
+u32 h_vsnprintf(u32 buf, u32 n, u32 fmt, u32 va) { return gfmt(W(buf), n, S(fmt), GP(va)); }
+u32 h_sprintf_chk(u32 buf, u32 flag, u32 cap, u32 fmt, const u32 *va)
+{
+    (void)flag;
+    return gfmt(W(buf), cap, S(fmt), va);
+}
+u32 h_snprintf_chk(u32 buf, u32 n, u32 flag, u32 cap, u32 fmt, const u32 *va)
+{
+    (void)flag; (void)cap;
+    return gfmt(W(buf), n, S(fmt), va);
+}
+u32 h_vsprintf_chk(u32 buf, u32 flag, u32 cap, u32 fmt, u32 va)
+{
+    (void)flag;
+    return gfmt(W(buf), cap, S(fmt), GP(va));
+}
+/* scanf: every argument is a pointer (one word), so the words are passed as they are; unused ones are ignored */
+#define SCAN_ARGS(w) GP((w)[0]), GP((w)[1]), GP((w)[2]), GP((w)[3]), GP((w)[4]), GP((w)[5]), GP((w)[6]), \
+                     GP((w)[7]), GP((w)[8]), GP((w)[9]), GP((w)[10]), GP((w)[11]), GP((w)[12]), GP((w)[13]), \
+                     GP((w)[14]), GP((w)[15])
+u32 h_sscanf(u32 s, u32 fmt, const u32 *va) { return (u32)sscanf(S(s), S(fmt), SCAN_ARGS(va)); }
+u32 h_fscanf(u32 f, u32 fmt, const u32 *va) { return (u32)fscanf(GP(f), S(fmt), SCAN_ARGS(va)); }
+#else
 u32 h_sprintf(u32 buf, u32 fmt, const u32 *va) { return (u32)vsprintf(W(buf), S(fmt), VA(va)); }
 u32 h_snprintf(u32 buf, u32 n, u32 fmt, const u32 *va) { return (u32)vsnprintf(W(buf), n, S(fmt), VA(va)); }
 u32 h_vsprintf(u32 buf, u32 fmt, u32 va) { return (u32)vsprintf(W(buf), S(fmt), VA(GP(va))); }
@@ -298,6 +399,7 @@ u32 h_vsprintf_chk(u32 buf, u32 flag, u32 cap, u32 fmt, u32 va)
 }
 u32 h_sscanf(u32 s, u32 fmt, const u32 *va) { return (u32)vsscanf(S(s), S(fmt), VA(va)); }
 u32 h_fscanf(u32 f, u32 fmt, const u32 *va) { return (u32)vfscanf(GP(f), S(fmt), VA(va)); }
+#endif
 
 /* Game paths: absolute host paths (NSBundle / NSHomeDirectory give those), '/' or '\'. */
 const char *gt_host_path(const char *p, char *buf, size_t n);   /* ns_misc.c: guest path -> host path */

@@ -21,7 +21,8 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
+#ifdef _WIN32
 #include <dbghelp.h>
 
 #include "rt.h"
@@ -234,6 +235,38 @@ __attribute__((noreturn)) void gt_crash(int code, const char *why)
         box_thread(NULL);
     ExitProcess((UINT)code);
 }
+
+#else /* Android: no minidump (the log and the system's tombstone hold the details); the box is SDL's */
+#include <SDL3/SDL.h>
+
+#include "rt.h"
+#include "ui.h"
+
+int gt_game_running;
+void gt_dump_arm(const char *log) { (void)log; }
+int gt_dump_is_writer(void) { return 0; }
+
+static volatile LONG crash_owner;
+
+__attribute__((noreturn)) void gt_crash(int code, const char *why)
+{
+    LONG me = (LONG)GetCurrentThreadId();
+    if (InterlockedCompareExchange(&crash_owner, me, 0)) {
+        if (crash_owner == me)
+            _exit(code);
+        for (;;)
+            Sleep(1000);
+    }
+    rt_log("\n[FATAL] %s\n", why);
+    static char text[2048];
+    snprintf(text, sizeof text, GT_GAME_TITLE " has to stop.\n\n%s\n\n%s", why,
+             rt_log_enabled() ? "The details are in gtracing.log, in the GTRacing folder. Please send that file with "
+                                "your bug report." : "The log is off (GT_LOG=0).");
+    al_stop_all();
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_ERROR, GT_GAME_TITLE, text, NULL);
+    _exit(code);
+}
+#endif
 
 /* GT_CRASH_TEST */
 

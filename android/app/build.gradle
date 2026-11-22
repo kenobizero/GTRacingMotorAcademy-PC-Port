@@ -1,0 +1,66 @@
+// GT Racing: Motor Academy HD on Android (armeabi-v7a).  Run  python -I android/prepare.py  first: it makes the
+// generated code from your game and fetches SDL 3 into android/SDL.
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'org.gtracing.port'
+    compileSdk 35
+    // ndkVersion: Android Gradle Plugin 8.7's default NDK (r27); any r26 or later builds it
+
+    defaultConfig {
+        applicationId 'org.gtracing.port'
+        minSdk 29                       // Android 10: native thread-local storage (the host's __thread), OpenGL ES 3
+        targetSdk 35
+        versionCode 1
+        versionName '1.0.0-android'
+        ndk {
+            abiFilters 'armeabi-v7a'    // 32-bit only: the host keeps the game's 32-bit pointers (host/core/plat.h)
+        }
+        externalNativeBuild {
+            cmake {
+                arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-29'
+                targets 'main', 'SDL3-shared'
+            }
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            // a debug signature, so the APK installs as it is; sign with your own key for anything else
+            signingConfig signingConfigs.debug
+            externalNativeBuild { cmake { arguments '-DGT_DEV=OFF', '-DCMAKE_BUILD_TYPE=Release' } }
+        }
+        debug {
+            debuggable true
+            jniDebuggable true
+            externalNativeBuild { cmake { arguments '-DGT_DEV=ON' } }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path 'jni/CMakeLists.txt'
+            version '3.22.1'
+        }
+    }
+
+    sourceSets {
+        main {
+            // SDL's Java side (SDLActivity and the rest) from android/SDL, next to this app's own activity
+            java.srcDirs += ['../SDL/android-project/app/src/main/java']
+        }
+    }
+
+    packagingOptions {
+        jniLibs {
+            useLegacyPackaging true     // libmain.so is large: stored compressed, unpacked at install
+        }
+    }
+
+    lint {
+        abortOnError false
+    }
+}

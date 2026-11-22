@@ -2,7 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "rt.h"
 
@@ -119,6 +119,10 @@ RtThread *rt_thread_new(u32 stack_size)
     t->cpu.rt = t;
     t->id = (int)InterlockedIncrement(&next_id);
     cur = t;
+#ifndef _WIN32
+    void gt_fault_thread_init(void);
+    gt_fault_thread_init();             /* fault_android.c: the fault handler's own stack on this thread */
+#endif
     return t;
 }
 

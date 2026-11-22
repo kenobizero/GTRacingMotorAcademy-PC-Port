@@ -12,7 +12,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "gl.h"
 #include "game_hooks.h"
@@ -46,20 +46,35 @@ static id init_api(id self, u32 api, u32 share)
     Ctx *x = CX(self);
     x->api = api;
     gles_api = (int)api;
-    SDL_GLContext prev = SDL_GL_GetCurrentContext();
+    SDL_GLContext prev = gt_gl_current();
+#if GT_GL_DESKTOP
     if (first_gl && prev != first_gl)
         SDL_GL_MakeCurrent(ui_window, first_gl);
     x->gl = SDL_GL_CreateContext(ui_window);
+#else
+    /* EGL (gles_android.c): later contexts share with the first without being made current to be made */
+    x->gl = gla_create();
+    if (x->gl && first_gl)
+        gla_make_current(x->gl);        /* gles_context_created below sets up the new one */
+#endif
     if (!x->gl)
         rt_fatal("OpenGL context: %s", SDL_GetError());
     if (!first_gl) {
         first_gl = x->gl;
         gles_load();
         const char *vs = getenv("GT_VSYNC");
+#if GT_GL_DESKTOP
         SDL_GL_SetSwapInterval(vs && *vs == '0' ? 0 : 1);
+#else
+        gla_swap_interval(vs && *vs == '0' ? 0 : 1);
+#endif
     }
     gles_context_created();
+#if GT_GL_DESKTOP
     SDL_GL_MakeCurrent(ui_window, prev);
+#else
+    gla_make_current(prev);
+#endif
     x->sharegroup = share ? objc_retain(share) : ns_alloc(ns_class("EAGLSharegroup"), 8);
     rt_log("[eagl] EAGLContext 0x%08x: OpenGL ES %u%s\n", self, api, share ? " (shared)" : "");
     return self;
@@ -73,7 +88,11 @@ static void c_setCurrent(CPU *c)
         cur = objc_retain(ctx);
         objc_release(old);
     }
+#if GT_GL_DESKTOP
     int ok = SDL_GL_MakeCurrent(ui_window, ctx ? CX(ctx)->gl : NULL);
+#else
+    int ok = gla_make_current(ctx ? CX(ctx)->gl : NULL);
+#endif
     if (ok)
         gles_context_current(ctx ? CX(ctx)->gl : NULL);    /* the vertex state shadow follows the context */
     if (!ok || rt_trace)
@@ -90,10 +109,14 @@ static void c_dealloc(CPU *c)
 {
     Ctx *x = CX(SELF);
     if (x->gl && x->gl != first_gl) {
-        if (SDL_GL_GetCurrentContext() == x->gl)
-            SDL_GL_MakeCurrent(ui_window, NULL);
         gles_context_destroyed(x->gl);
+#if GT_GL_DESKTOP
+        if (gt_gl_current() == x->gl)
+            SDL_GL_MakeCurrent(ui_window, NULL);
         SDL_GL_DestroyContext(x->gl);
+#else
+        gla_destroy(x->gl);
+#endif
     }
     objc_release(x->sharegroup);
     objc_free_instance(SELF);
@@ -135,7 +158,7 @@ static void save_shot(int W, int H)
     SDL_Surface *s = SDL_CreateSurfaceFrom(W, H, SDL_PIXELFORMAT_ABGR8888, flip, W * 4);
     char path[MAX_PATH + 32];
     CreateDirectoryA(shot_dir, NULL);
-    snprintf(path, sizeof path, "%s\\frame%05u.bmp", shot_dir, frames);
+    snprintf(path, sizeof path, "%s" GT_SEP_S "frame%05u.bmp", shot_dir, frames);
     if (s && SDL_SaveBMP(s, path))
         rt_log("[eagl] saved %s\n", path);
     SDL_DestroySurface(s);
@@ -218,6 +241,15 @@ static void present(Ctx *x)
 {
     if (!drawable_rb || rb_w <= 0 || rb_h <= 0)
         return;
+#if !GT_GL_DESKTOP
+    if (!gla_present_begin()) {         /* Android: in the background (no surface), or another thread has the window */
+        p_glFlush();
+        frames++;
+        gt_frame_end();
+        ns_wait(0.1);                   /* nothing is shown: 10 frames a second, as BACKGROUND_THROTTLE minimized */
+        return;
+    }
+#endif
     int W, H;
     SDL_GetWindowSizeInPixels(ui_window, &W, &H);
     u32 prog, rfbo, dfbo, rbb, active, abuf, ebuf, tex0;
@@ -239,8 +271,12 @@ static void present(Ctx *x)
     p_glActiveTexture(GL_TEXTURE0);
     pt_add(0, t0);
     t0 = pt_on > 0 ? pt_now() : 0;
+#if GT_GL_DESKTOP
     p_glPushAttrib(GL_ALL_ATTRIB_BITS);
     p_glPushClientAttrib(GL_CLIENT_ALL_ATTRIB_BITS);
+#else
+    gla_quad_save();
+#endif
     pt_add(1, t0);
     p_glUseProgram(0);
     p_glDisable(GL_SCISSOR_TEST);
@@ -300,6 +336,7 @@ static void present(Ctx *x)
         vy[i] = 1 - 2 * wy / H;
     }
 
+#if GT_GL_DESKTOP
     gles_bind_fb(GL_FRAMEBUFFER, 0);
     p_glViewport(0, 0, (u32)W, (u32)H);
     p_glDisable(GL_DEPTH_TEST);
@@ -334,6 +371,9 @@ static void present(Ctx *x)
         p_glVertex2f(vx[i], vy[i]);
     }
     p_glEnd();
+#else
+    gla_quad_draw(x->tex, vx, vy, W, H);
+#endif
     frames++;
     for (int i = 0; i < nshots; i++)
         if (shots[i] == (int)frames)
@@ -372,22 +412,32 @@ static void present(Ctx *x)
     if (ui_minimized())
         p_glFlush();                      /* BACKGROUND_THROTTLE: nothing to show; the frame's work still goes out */
     else
+#if GT_GL_DESKTOP
         SDL_GL_SwapWindow(ui_window);
+#else
+        gla_swap();
+#endif
     pt_add(2, t0);
     t0 = pt_on > 0 ? pt_now() : 0;
+#if GT_GL_DESKTOP
     p_glMatrixMode(GL_MODELVIEW);
     p_glPopMatrix();
     p_glMatrixMode(GL_PROJECTION);
     p_glPopMatrix();
     p_glMatrixMode(GL_TEXTURE);
     p_glPopMatrix();
+#endif
 
     /* the game's framebuffers first: the attributes hold their draw/read buffers (COLOR_ATTACHMENT0),
        which the default framebuffer would refuse */
     gles_bind_fb(GL_READ_FRAMEBUFFER, rfbo);
     gles_bind_fb(GL_DRAW_FRAMEBUFFER, dfbo);
+#if GT_GL_DESKTOP
     p_glPopClientAttrib();
     p_glPopAttrib();
+#else
+    gla_quad_restore();
+#endif
     p_glActiveTexture(GL_TEXTURE0);
     p_glBindTexture(GL_TEXTURE_2D, tex0);
     p_glActiveTexture(active);
@@ -476,9 +526,9 @@ void eagl_init(void)
     if (dev_getenv("GT_QUIT_AT"))
         quit_at = atoi(dev_getenv("GT_QUIT_AT"));
     GetModuleFileNameA(NULL, shot_dir, sizeof shot_dir);
-    char *e = strrchr(shot_dir, '\\');
+    char *e = strrchr(shot_dir, GT_SEP);
     if (e)
-        strcpy(e, "\\shots");
+        strcpy(e, GT_SEP_S "shots");
     if (dev_getenv("GT_SHOT_DIR") && *dev_getenv("GT_SHOT_DIR"))      /* testing: two runs at once */
         snprintf(shot_dir, sizeof shot_dir, "%s", dev_getenv("GT_SHOT_DIR"));
     static const NsMethod ctx[] = {

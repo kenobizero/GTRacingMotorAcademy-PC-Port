@@ -76,7 +76,7 @@ static u32 raw_binding(u32 which)
 /* the host's framebuffer, made or resized to the drawable; 1 when it is in use on this context */
 static int ms_ready(void)
 {
-    if (!main_fbo || ms_failed || SDL_GL_GetCurrentContext() != main_ctx || !want_samples())
+    if (!main_fbo || ms_failed || gt_gl_current() != main_ctx || !want_samples())
         return 0;
     u32 rb;
     int w, h;
@@ -126,14 +126,14 @@ void glx_drawable_changed(u32 rb)
                 main_ctx = color_att[i].ctx;
                 rt_log("[msaa] the game's main framebuffer is %u\n", main_fbo);
             }
-    if (SDL_GL_GetCurrentContext() == main_ctx)
+    if (gt_gl_current() == main_ctx)
         ms_ready();
 }
 
 /* the framebuffer eagl.c presents from, 0 = the drawable renderbuffer as on the iPad */
 u32 glx_present_fbo(void)
 {
-    return ms_fbo && ms_w && samples > 0 && !ms_failed && SDL_GL_GetCurrentContext() == main_ctx ? ms_fbo : 0;
+    return ms_fbo && ms_w && samples > 0 && !ms_failed && gt_gl_current() == main_ctx ? ms_fbo : 0;
 }
 
 /* what the game reads back as the bound framebuffer */
@@ -170,7 +170,7 @@ void h_glFramebufferRenderbuffer(u32 target, u32 att, u32 rbt, u32 rb)
     if (ncolor_att < 16) {
         color_att[ncolor_att].fbo = fb;
         color_att[ncolor_att].rb = rb;
-        color_att[ncolor_att].ctx = SDL_GL_GetCurrentContext();
+        color_att[ncolor_att].ctx = gt_gl_current();
         ncolor_att++;
     }
     u32 drb;
@@ -178,7 +178,7 @@ void h_glFramebufferRenderbuffer(u32 target, u32 att, u32 rbt, u32 rb)
     eagl_drawable(&drb, &w, &h);
     if (!main_fbo && drb && rb == drb) {
         main_fbo = fb;
-        main_ctx = SDL_GL_GetCurrentContext();
+        main_ctx = gt_gl_current();
         rt_log("[msaa] the game's main framebuffer is %u\n", main_fbo);
         ms_ready();
     }
@@ -307,7 +307,7 @@ void glx_set_aniso(float n) { pending_aniso = n < 0 ? 0 : n; }
 /* eagl.c, after a frame is shown: a frame is drawn wholly with one framebuffer */
 void glx_frame_end(void)
 {
-    if (pending_samples >= 0 && max_samples && SDL_GL_GetCurrentContext() == main_ctx) {
+    if (pending_samples >= 0 && max_samples && gt_gl_current() == main_ctx) {
         int n = pending_samples > max_samples ? max_samples : pending_samples;
         pending_samples = -1;
         n = n > 1 ? n : 0;

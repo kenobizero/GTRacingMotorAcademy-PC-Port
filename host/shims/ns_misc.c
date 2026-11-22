@@ -5,15 +5,17 @@
    The game sees iOS-like paths: its home is /var/mobile/Applications/GTRACING (Documents,
    Library, tmp) with the .app inside it, as on the device.  gt_host_path maps them to the
    host: the .app folder, and a "home" folder next to the program. */
+#ifdef _WIN32
 #include <direct.h>
 #include <io.h>
+#endif
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "hmap.h"
 #include "ns.h"
@@ -73,7 +75,7 @@ static void idx_put(MapStr *m, const char *key, u32 v)
 static int patch_index_dir(const char *dir, const char *rel, int depth)
 {
     char pat[MAX_PATH * 2];
-    snprintf(pat, sizeof pat, "%s%s\\*", dir, rel);
+    snprintf(pat, sizeof pat, "%s%s" GT_SEP_S "*", dir, rel);
     WIN32_FIND_DATAA d;
     HANDLE h = FindFirstFileA(pat, &d);
     if (h == INVALID_HANDLE_VALUE)
@@ -83,7 +85,7 @@ static int patch_index_dir(const char *dir, const char *rel, int depth)
         if (!strcmp(d.cFileName, ".") || !strcmp(d.cFileName, ".."))
             continue;
         char sub[MAX_PATH * 2];
-        snprintf(sub, sizeof sub, "%s\\%s", rel, d.cFileName);
+        snprintf(sub, sizeof sub, "%s" GT_SEP_S "%s", rel, d.cFileName);
         if (d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
             if (depth < 8)
                 n += patch_index_dir(dir, sub, depth + 1);
@@ -104,7 +106,7 @@ static void addons_init(const char *exe_dir)
         return;
     }
     char pat[MAX_PATH * 2];
-    snprintf(pat, sizeof pat, "%s\\add-on\\*", exe_dir);
+    snprintf(pat, sizeof pat, "%s" GT_SEP_S "add-on" GT_SEP_S "*", exe_dir);
     WIN32_FIND_DATAA d;
     HANDLE h = FindFirstFileA(pat, &d);
     if (h == INVALID_HANDLE_VALUE)
@@ -113,9 +115,9 @@ static void addons_init(const char *exe_dir)
         if (!(d.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) || d.cFileName[0] == '.')
             continue;
         char dir[MAX_PATH * 2], fpat[MAX_PATH * 2 + 4];
-        if (snprintf(dir, sizeof dir, "%s\\add-on\\%s", exe_dir, d.cFileName) >= (int)sizeof dir)
+        if (snprintf(dir, sizeof dir, "%s" GT_SEP_S "add-on" GT_SEP_S "%s", exe_dir, d.cFileName) >= (int)sizeof dir)
             continue;                    /* a folder name too long for a Windows path */
-        snprintf(fpat, sizeof fpat, "%s\\*", dir);
+        snprintf(fpat, sizeof fpat, "%s" GT_SEP_S "*", dir);
         WIN32_FIND_DATAA f;
         HANDLE g = FindFirstFileA(fpat, &f);
         if (g == INVALID_HANDLE_VALUE)
@@ -128,13 +130,13 @@ static void addons_init(const char *exe_dir)
             if (strlen(dir) + 1 + strlen(f.cFileName) >= sizeof addon_files->path)
                 continue;
             if (idx_has(&addon_idx, f.cFileName, NULL)) {
-                rt_log("[addon] %s\\%s: another add-on has that file, not used\n", d.cFileName, f.cFileName);
+                rt_log("[addon] %s" GT_SEP_S "%s: another add-on has that file, not used\n", d.cFileName, f.cFileName);
                 continue;
             }
             addon_files = realloc(addon_files, sizeof *addon_files * (addon_count + 1));
             AddonFile *a = &addon_files[addon_count++];
             snprintf(a->name, sizeof a->name, "%s", f.cFileName);
-            snprintf(a->path, sizeof a->path, "%s\\%s", dir, f.cFileName);
+            snprintf(a->path, sizeof a->path, "%s" GT_SEP_S "%s", dir, f.cFileName);
             idx_put(&addon_idx, a->name, (u32)addon_count);      /* index + 1 */
             n++;
         } while (FindNextFileA(g, &f));
@@ -148,7 +150,7 @@ static void addons_init(const char *exe_dir)
 static const char *addon_file(const char *host)
 {
     size_t bl = strlen(host_bundle);
-    if (!addon_count || !bl || _strnicmp(host, host_bundle, bl) || host[bl] != '\\' || strchr(host + bl + 1, '\\'))
+    if (!addon_count || !bl || _strnicmp(host, host_bundle, bl) || host[bl] != GT_SEP || strchr(host + bl + 1, GT_SEP))
         return NULL;
     u32 i;
     return idx_has(&addon_idx, host + bl + 1, &i) ? addon_files[i - 1].path : NULL;
@@ -238,11 +240,11 @@ const char *gt_host_path(const char *g0, char *buf, size_t n)
         snprintf(buf, n, "%s", g);
     for (char *s = buf; *s; s++)
         if (*s == '/')
-            *s = '\\';
+            *s = GT_SEP;
     /* a bundle file the build patched (build\host\patch: the menu SWF for PC_CONTROLS, pcctl.c) is read
        from there instead; the game mostly opens bundle files by their host path (NSBundle gives it) */
     size_t bl = strlen(host_bundle);
-    if (host_patch[0] && bl && !_strnicmp(buf, host_bundle, bl) && buf[bl] == '\\' &&
+    if (host_patch[0] && bl && !_strnicmp(buf, host_bundle, bl) && buf[bl] == GT_SEP &&
         idx_has(&patch_idx, buf + bl, NULL)) {              /* FILE_INDEX: listed at start, no file system call */
         char p[MAX_PATH * 2];
         snprintf(p, sizeof p, "%s%s", host_patch, buf + bl);
@@ -263,10 +265,10 @@ static void mkdir_host(const char *p) { CreateDirectoryA(p, NULL); }
 void gt_paths_init(const char *bundle, const char *exe_dir)
 {
     snprintf(host_bundle, sizeof host_bundle, "%s", bundle);
-    snprintf(host_home, sizeof host_home, "%s\\home", exe_dir);
+    snprintf(host_home, sizeof host_home, "%s" GT_SEP_S "home", exe_dir);
     const char *pc = getenv("GT_PC_CONTROLS");          /* =0: the original menu SWF (pcctl.c) */
     if (!(pc && *pc == '0'))
-        snprintf(host_patch, sizeof host_patch, "%s\\patch", exe_dir);
+        snprintf(host_patch, sizeof host_patch, "%s" GT_SEP_S "patch", exe_dir);
     if (getenv("GT_HOME") && *getenv("GT_HOME"))     /* testing: a copy of the save, not the player's own */
         snprintf(host_home, sizeof host_home, "%s", getenv("GT_HOME"));
     if (host_patch[0]) {
@@ -274,8 +276,8 @@ void gt_paths_init(const char *bundle, const char *exe_dir)
         rt_log("[ns] patch folder: %d files indexed\n", n);
     }
     addons_init(exe_dir);
-    static const char *const sub[] = {"", "\\Documents", "\\Library", "\\Library\\Caches",
-                                      "\\Library\\Preferences", "\\tmp", NULL};
+    static const char *const sub[] = {"", GT_SEP_S "Documents", GT_SEP_S "Library", GT_SEP_S "Library" GT_SEP_S "Caches",
+                                      GT_SEP_S "Library" GT_SEP_S "Preferences", GT_SEP_S "tmp", NULL};
     for (int i = 0; sub[i]; i++) {
         char p[MAX_PATH * 2];
         snprintf(p, sizeof p, "%s%s", host_home, sub[i]);
@@ -544,11 +546,11 @@ static int mkdirs(const char *g, int parents)
     gt_host_path(g, p, sizeof p);
     if (!parents)
         return CreateDirectoryA(p, NULL) || GetLastError() == ERROR_ALREADY_EXISTS;
-    for (char *s = p + 3; *s; s++)
-        if (*s == '\\') {
+    for (char *s = p + (GT_SEP == '/' ? 1 : 3); *s; s++)    /* past "/" or "C:\\" */
+        if (*s == GT_SEP) {
             *s = 0;
             CreateDirectoryA(p, NULL);
-            *s = '\\';
+            *s = GT_SEP;
         }
     CreateDirectoryA(p, NULL);
     DWORD a = GetFileAttributesA(p);
@@ -571,7 +573,7 @@ static int remove_tree(const char *hp)
     if (!(a & FILE_ATTRIBUTE_DIRECTORY))
         return DeleteFileA(hp) != 0;
     char pat[MAX_PATH * 2];
-    snprintf(pat, sizeof pat, "%s\\*", hp);
+    snprintf(pat, sizeof pat, "%s" GT_SEP_S "*", hp);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pat, &fd);
     if (h != INVALID_HANDLE_VALUE) {
@@ -579,7 +581,7 @@ static int remove_tree(const char *hp)
             if (!strcmp(fd.cFileName, ".") || !strcmp(fd.cFileName, ".."))
                 continue;
             char sub[MAX_PATH * 2];
-            snprintf(sub, sizeof sub, "%s\\%s", hp, fd.cFileName);
+            snprintf(sub, sizeof sub, "%s" GT_SEP_S "%s", hp, fd.cFileName);
             remove_tree(sub);
         } while (FindNextFileA(h, &fd));
         FindClose(h);
@@ -598,7 +600,7 @@ static void fm_contents(CPU *c)
 {
     char p[MAX_PATH * 2], pat[MAX_PATH * 2 + 4];
     gt_host_path(ns_utf8(ARG(0)), p, sizeof p);
-    snprintf(pat, sizeof pat, "%s\\*", p);
+    snprintf(pat, sizeof pat, "%s" GT_SEP_S "*", p);
     WIN32_FIND_DATAA fd;
     HANDLE h = FindFirstFileA(pat, &fd);
     if (h == INVALID_HANDLE_VALUE) {
@@ -610,7 +612,7 @@ static void fm_contents(CPU *c)
     id a = ns_array_new(NULL, 0);
     char *seen = calloc(addon_count + 1, 1);
     size_t bl = strlen(host_bundle);
-    int bundle = bl && !_strnicmp(p, host_bundle, bl) && (!p[bl] || (p[bl] == '\\' && !p[bl + 1]));
+    int bundle = bl && !_strnicmp(p, host_bundle, bl) && (!p[bl] || (p[bl] == GT_SEP && !p[bl + 1]));
     do {
         if (strcmp(fd.cFileName, ".") && strcmp(fd.cFileName, "..")) {
             ns_array_add(a, ns_string(fd.cFileName));
@@ -1210,9 +1212,16 @@ static id tz_make(s32 secs, const char *name)
 static void tz_localZone(CPU *c)
 {
     if (!tz_local) {
+#ifdef _WIN32
         TIME_ZONE_INFORMATION z;
         DWORD r = GetTimeZoneInformation(&z);
         s32 bias = -(s32)(z.Bias + (r == TIME_ZONE_ID_DAYLIGHT ? z.DaylightBias : 0)) * 60;
+#else
+        time_t now = time(NULL);
+        struct tm lt;
+        localtime_r(&now, &lt);
+        s32 bias = (s32)lt.tm_gmtoff;
+#endif
         tz_local = tz_make(bias, "Local");
         objc_retain(tz_local);
     }

@@ -77,6 +77,12 @@ static int gt_postfx_mode(void)
     if (mode_ < 0) {
         const char *e = getenv("GT_POSTFX");
         mode_ = e && *e >= '0' && *e <= '4' && !e[1] ? *e - '0' : POSTFX_DEFAULT;
+#if !GT_GL_DESKTOP
+        if (mode_ >= 2) {               /* Android: the host's own passes are desktop OpenGL; the game's bloom only */
+            rt_log("[postfx] POSTFX=%d needs desktop OpenGL: off on OpenGL ES\n", mode_);
+            mode_ = 0;
+        }
+#endif
         rt_log(mode_ == 0   ? "[postfx] off (POSTFX=0)\n"
                : mode_ == 1 ? "[postfx] the game's own bloom on (POSTFX=1)\n"
                : mode_ == 2 ? "[postfx] the iPad 2010 bloom on (POSTFX=2)\n"
@@ -103,6 +109,10 @@ void gt_postfx_set(int m)
 {
     gt_postfx_mode();
     mode_ = m >= 0 && m <= 4 ? m : 0;
+#if !GT_GL_DESKTOP
+    if (mode_ >= 2)
+        mode_ = 1;                      /* Android: Classic / Enhanced are desktop OpenGL; the game's own bloom */
+#endif
     rt_log("[postfx] %s (Options > Display)\n", mode_ == 4   ? "Enhanced"
                                                  : mode_ == 3 ? "Classic Natural"
                                                  : mode_ == 2 ? "Classic"

@@ -405,8 +405,13 @@ void h_UIGraphicsEndImageContext(void)
    Here a UIImage is {isa, CGImage}, and the album is a folder: Pictures\GT Racing (GT_PHOTO_DIR for
    tests), a PNG per shot through GDI+, turned to the landscape the player sees (the drawable is
    portrait: its top row is the picture's left column, as eagl.c's present has it). */
-#include <windows.h>
+#include "plat.h"
+#ifdef _WIN32
 #include <shlobj.h>
+#else
+#include <SDL3/SDL.h>
+#include <sys/stat.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 
@@ -425,6 +430,7 @@ static void uiimage_dealloc(CPU *c)
     objc_free_instance(SELF);
 }
 
+#ifdef _WIN32
 typedef struct { UINT32 version; void *debug; BOOL no_thread, no_codecs; } GpStartup;
 int __stdcall GdiplusStartup(ULONG_PTR *token, const GpStartup *in, void *out);
 int __stdcall GdipCreateBitmapFromScan0(int w, int h, int stride, int format, BYTE *scan0, void **bitmap);
@@ -447,6 +453,41 @@ static int save_png(const WCHAR *path, u8 *bgrx, int w, int h)
         GdipDisposeImage(bmp);
     return ok;
 }
+#else
+/* Android: Pictures/GT Racing on the shared storage (with All files access), else Screenshots in the port's folder */
+static int save_png_android(const u8 *bgrx, int w, int h, char *name, size_t nn)
+{
+    char dir[MAX_PATH], path[MAX_PATH + 64];
+    const char *env = getenv("GT_PHOTO_DIR"), *ext = getenv("EXTERNAL_STORAGE");
+    if (env && *env)
+        snprintf(dir, sizeof dir, "%s", env);
+    else {
+        snprintf(dir, sizeof dir, "%s/Pictures", ext && *ext ? ext : "/storage/emulated/0");
+        mkdir(dir, 0777);
+        strncat(dir, "/GT Racing", sizeof dir - strlen(dir) - 1);
+        mkdir(dir, 0777);
+        if (access(dir, W_OK)) {
+            char exe[MAX_PATH];
+            GetModuleFileNameA(NULL, exe, sizeof exe);
+            char *e = strrchr(exe, '/');
+            if (e)
+                *e = 0;
+            snprintf(dir, sizeof dir, "%s/Screenshots", exe);
+        }
+    }
+    mkdir(dir, 0777);
+    time_t now = time(NULL);
+    struct tm t;
+    localtime_r(&now, &t);
+    snprintf(name, nn, "GTRacing_%04d%02d%02d_%02d%02d%02d.png", t.tm_year + 1900, t.tm_mon + 1, t.tm_mday, t.tm_hour,
+             t.tm_min, t.tm_sec);
+    snprintf(path, sizeof path, "%s/%s", dir, name);
+    SDL_Surface *sf = SDL_CreateSurfaceFrom(w, h, SDL_PIXELFORMAT_XRGB8888, (void *)bgrx, w * 4);
+    int ok = sf && SDL_SavePNG(sf, path);
+    SDL_DestroySurface(sf);
+    return ok;
+}
+#endif
 
 void h_UIImageWriteToSavedPhotosAlbum(u32 image, u32 target, u32 sel, u32 ctx)
 {
@@ -469,6 +510,13 @@ void h_UIImageWriteToSavedPhotosAlbum(u32 image, u32 target, u32 sel, u32 ctx)
             u8 *q = out + ((size_t)y * w + k) * 4;
             q[0] = p[2], q[1] = p[1], q[2] = p[0], q[3] = 255;
         }
+#ifndef _WIN32
+    char name[96];
+    int ok_a = save_png_android(out, w, h, name, sizeof name);
+    free(out);
+    rt_log("[cg] screenshot %d x %d %s %s\n", w, h, ok_a ? "saved:" : "NOT saved:", name);
+    return;
+#else
     WCHAR dir[MAX_PATH], path[MAX_PATH + 64];
     const char *env = getenv("GT_PHOTO_DIR");
     if (env && *env)
@@ -492,6 +540,7 @@ void h_UIImageWriteToSavedPhotosAlbum(u32 image, u32 target, u32 sel, u32 ctx)
     WideCharToMultiByte(CP_UTF8, 0, file ? file + 1 : path, -1, u8path, sizeof u8path, NULL, NULL);
     rt_log("[cg] screenshot %d x %d %s %s\\%s\n", w, h, ok ? "saved to" : "NOT saved to",
            env && *env ? "GT_PHOTO_DIR" : "Pictures\\GT Racing", u8path);
+#endif
 }
 
 void cg_init(void)

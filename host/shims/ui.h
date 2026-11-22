@@ -46,6 +46,9 @@ void al_init(void);
 void al_stop_all(void);             /* every source silent (a crash's box) */
 /* the accelerometer (uikit.c), fed by the PC input (games/gtracing/features/pcinput.c) */
 extern float ui_tilt;               /* -1 .. 1 steering tilt from the keyboard / pad */
+extern volatile int ui_app_background;  /* Android: the app is in the background */
+extern int ui_sensor_ok;            /* Android: the device's accelerometer, as the iPad's (in g) */
+extern double ui_sensor_g[3];
 void ui_gravity(double g[3]);       /* the iPad's gravity (x, y, z in g) for that tilt */
 
 #endif

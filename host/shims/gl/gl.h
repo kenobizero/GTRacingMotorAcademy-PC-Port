@@ -1,12 +1,29 @@
-/* gl.h -- pointers to the desktop OpenGL entry points (gl_list.h), loaded by gles_load(). */
+/* gl.h -- pointers to the OpenGL entry points (gl_list.h), loaded by gles_load(): desktop OpenGL 2.1 on Windows,
+   OpenGL ES 3.0 on Android (gles.c passes the game's ES calls straight through there; what ES lacks of the list,
+   the ES 1.1 fixed-function calls and the desktop ones, gets a stand-in, gles_load). */
 #ifndef GT_GL_H
 #define GT_GL_H
 
+#ifdef _WIN32
 #include <SDL3/SDL_opengl.h>
+#define GT_GLAPI __attribute__((stdcall))
+#define GT_GL_DESKTOP 1
+#else
+#include <GLES3/gl3.h>
+#include <GLES2/gl2ext.h>
+#define GT_GLAPI
+#define GT_GL_DESKTOP 0
+#include "gl_es_names.h"
+#endif
 
 #include "arm_rt.h"
 
-#define GT_GLAPI __attribute__((stdcall))
+/* the context current on this thread (an SDL_GLContext; on Android the EGLContext, which is the same thing) */
+#if GT_GL_DESKTOP
+#define gt_gl_current() ((void *)SDL_GL_GetCurrentContext())
+#else
+void *gt_gl_current(void);              /* gles_android.c */
+#endif
 #define GLP(name, params, args) typedef void(GT_GLAPI *T_##name) params; extern T_##name p_##name;
 #define GLR(ret, name, params, args) typedef ret(GT_GLAPI *T_##name) params; extern T_##name p_##name;
 #define GLX(ret, name, params) typedef ret(GT_GLAPI *T_##name) params; extern T_##name p_##name;

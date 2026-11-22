@@ -59,9 +59,18 @@
    not a piece of the id itself.  At most 16 characters (PLAYER_NAME's own limit; more runs into the car column):
    the name is cut to 11 for a tag.  The own row: orange, and " (You)" when it still fits. */
 #define _CRT_RAND_S
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "plat_net.h"
+#ifdef _WIN32
 #include <winhttp.h>
+#else
+/* Android: the requests go through Java's HttpURLConnection (android_jni.c); the URL is kept as on Windows */
+#include <wchar.h>
+typedef unsigned short INTERNET_PORT;
+typedef void *HINTERNET;
+#define _wcsicmp wcscasecmp
+int gt_android_http(const char *method, const char *url, const char *body, int timeout_ms, char **reply,
+                    size_t max);
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -439,9 +448,11 @@ static void side_open(void)
     side = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (side == INVALID_SOCKET)
         return;
+#ifdef _WIN32
     BOOL no = FALSE;
     DWORD got;
     WSAIoctl(side, _WSAIOW(IOC_VENDOR, 12), &no, sizeof no, NULL, 0, &got, NULL, NULL);
+#endif
     struct sockaddr_in w = {0};
     w.sin_family = AF_INET;
     w.sin_addr.s_addr = net_test_ip();
@@ -592,6 +603,60 @@ static int cl_sent_ms, cl_refused_ms, cl_state_loaded;   /* under the lock */
 static volatile LONG cl_said;              /* the last failure logged (each once until a success) */
 static DWORD cl_err;                       /* WinHTTP's error of the last request with no answer */
 
+#ifndef _WIN32
+/* https://host[:port][/path], or plain http to this PC (the local test server); no user, query or fragment */
+static int cloud_crack(const char *u, CloudUrl *o)
+{
+    memset(o, 0, sizeof *o);
+    if (!u || !*u)
+        return 0;
+    const char *p;
+    if (!strncasecmp(u, "https://", 8))
+        o->secure = 1, o->port = 443, p = u + 8;
+    else if (!strncasecmp(u, "http://", 7))
+        o->port = 80, p = u + 7;
+    else
+        return 0;
+    const char *h = p, *he;
+    if (*h == '[') {                        /* [::1] */
+        he = strchr(h, ']');
+        if (!he)
+            return 0;
+        he++;
+    } else
+        for (he = h; *he && *he != ':' && *he != '/' && *he != '?' && *he != '#'; he++)
+            if (*he == '@')
+                return 0;                   /* a user name */
+    size_t hn = (size_t)(he - h);
+    if (!hn || hn >= 256 || memchr(h, '@', hn))
+        return 0;
+    for (size_t i = 0; i < hn; i++)
+        o->host[i] = (wchar_t)(unsigned char)h[i];
+    o->host[hn] = 0;
+    p = he;
+    if (*p == ':') {
+        char *e;
+        long port = strtol(p + 1, &e, 10);
+        if (e == p + 1 || port <= 0 || port > 65535)
+            return 0;
+        o->port = (INTERNET_PORT)port;
+        p = e;
+    }
+    if (strchr(p, '?') || strchr(p, '#') || strchr(p, '@'))
+        return 0;
+    size_t n = strlen(p);
+    if (n >= 500 || (n && *p != '/'))
+        return 0;
+    for (size_t i = 0; i < n; i++)
+        o->base[i] = (wchar_t)(unsigned char)p[i];
+    o->base[n] = 0;
+    while (n && o->base[n - 1] == L'/')
+        o->base[--n] = 0;
+    int here = !wcscmp(o->host, L"127.0.0.1") || !_wcsicmp(o->host, L"localhost") || !wcscmp(o->host, L"::1") ||
+               !wcscmp(o->host, L"[::1]");
+    return o->secure || here;
+}
+#else
 /* https://host[:port][/path], or plain http to this PC (the local test server); no user, query or fragment */
 static int cloud_crack(const char *u, CloudUrl *o)
 {
@@ -624,6 +689,7 @@ static int cloud_crack(const char *u, CloudUrl *o)
         o->base[--n] = 0;
     return 1;
 }
+#endif
 
 /* JSON: just what worker.js answers, {"v":1,"rows":[{"id","name","car","time_ms"}, ...]}; anything else is
    skipped or makes the answer no board -- */
@@ -937,6 +1003,29 @@ static int cloud_failed(int status)
     return quota ? CLOUD_QUOTA_WAIT : CLOUD_RETRY;
 }
 
+#ifndef _WIN32
+/* one request; the answer (NUL-ended, to free) in *reply; the HTTP status, -1 for no answer */
+static int cloud_http(HINTERNET ses, const wchar_t *verb, const char *path, const char *body, char **reply)
+{
+    (void)ses;
+    char url[1200], method[8];
+    size_t k = 0;
+    for (; verb[k] && k < sizeof method - 1; k++)
+        method[k] = (char)verb[k];
+    method[k] = 0;
+    int o = snprintf(url, sizeof url, "%s://", cl_url.secure ? "https" : "http");
+    for (const wchar_t *w = cl_url.host; *w && o < 600; w++)
+        url[o++] = (char)*w;
+    o += snprintf(url + o, sizeof url - (size_t)o, ":%u", (unsigned)cl_url.port);
+    for (const wchar_t *w = cl_url.base; *w && o < 1100; w++)
+        url[o++] = (char)*w;
+    snprintf(url + o, sizeof url - (size_t)o, "%s", path);
+    int status = gt_android_http(method, url, body, CLOUD_TIMEOUT, reply, CLOUD_REPLY_MAX);
+    if (status < 0)
+        cl_err = 0;
+    return status;
+}
+#else
 /* one request; the answer (NUL-ended, to free) in *reply; the HTTP status, -1 for no answer */
 static int cloud_http(HINTERNET ses, const wchar_t *verb, const char *path, const char *body, char **reply)
 {
@@ -980,11 +1069,15 @@ static int cloud_http(HINTERNET ses, const wchar_t *verb, const char *path, cons
         WinHttpCloseHandle(con);
     return status;
 }
+#endif
 
 static DWORD WINAPI cloud_thread(void *arg)
 {
     CloudJob *j = arg;
     static Entry rows[MAX_ENTRIES];        /* one request thread at a time (cl_busy) */
+#ifndef _WIN32
+    HINTERNET ses = (HINTERNET)1;          /* Android: no session to open (android_jni.c) */
+#else
     const wchar_t *agent = L"GTRacingPC-board/1";   /* nothing of this PC in it */
     HINTERNET ses = WinHttpOpen(agent, WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
                                 WINHTTP_NO_PROXY_BYPASS, 0);
@@ -998,6 +1091,7 @@ static DWORD WINAPI cloud_thread(void *arg)
             WinHttpSetOption(ses, WINHTTP_OPTION_SECURE_PROTOCOLS, &tls, sizeof tls);
         }
     }
+#endif
     int wait = 0;
     char *reply = NULL;
     if (j->post_ms) {
@@ -1034,8 +1128,10 @@ static DWORD WINAPI cloud_thread(void *arg)
             wait = cloud_failed(st == 200 ? -2 : st);
         free(reply);
     }
+#ifdef _WIN32
     if (ses)
         WinHttpCloseHandle(ses);
+#endif
     if (wait) {
         cl_wait_until = GetTickCount() + (DWORD)wait;
         InterlockedExchange(&cl_waiting, 1);

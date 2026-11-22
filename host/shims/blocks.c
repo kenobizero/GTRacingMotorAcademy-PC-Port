@@ -10,7 +10,7 @@
    the main thread's run loop. */
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "ns.h"
 
