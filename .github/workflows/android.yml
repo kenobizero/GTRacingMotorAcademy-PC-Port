@@ -121,22 +121,11 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
 
-      - name: The two APKs (32 + 64-bit, and 32-bit only)
+      - name: The 32 + 64-bit APK
         if: steps.game.outputs.ok == '1'
         run: |
-          out=android/app/build/outputs/apk/release
-          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
-          mkdir -p apk/both apk/32
-          cp "$out/app-release.apk" apk/both/GTRacing-32-64bit.apk
-          # 32-bit only: the 64-bit libraries out, aligned and signed again (the build's own debug key)
-          cp "$out/app-release.apk" apk/tmp32.apk
-          zip -q -d apk/tmp32.apk 'lib/arm64-v8a/*'
-          "$bt/zipalign" -f -p 4 apk/tmp32.apk apk/aligned32.apk
-          "$bt/apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android \
-            --ks-key-alias androiddebugkey --out apk/32/GTRacing-32bit.apk apk/aligned32.apk
-          "$bt/apksigner" verify apk/32/GTRacing-32bit.apk
-          unzip -l apk/both/GTRacing-32-64bit.apk | grep "lib/" || true
-          ls -la apk/both apk/32
+          mkdir -p apk/both
+          cp android/app/build/outputs/apk/release/app-release.apk apk/both/GTRacing-32-64bit.apk
 
       - uses: actions/upload-artifact@v4
         if: steps.game.outputs.ok == '1'
@@ -145,6 +134,28 @@ jobs:
           path: apk/both/*.apk
           retention-days: 7
           if-no-files-found: error
+
+      - name: The 32-bit-only APK
+        if: steps.game.outputs.ok == '1'
+        run: |
+          out=android/app/build/outputs/apk/release
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          mkdir -p apk/32
+          # 32-bit only: the 64-bit libraries out, aligned and signed again (the build's own debug key)
+          cp "$out/app-release.apk" apk/tmp32.apk
+          zip -q -d apk/tmp32.apk 'lib/arm64-v8a/*'
+          "$bt/zipalign" -f -p 4 apk/tmp32.apk apk/aligned32.apk
+          # the debug key the build signed with (the same key: one APK installs over the other); where Gradle keeps it
+          # depends on its version
+          ks=$(find "$HOME" "${ANDROID_USER_HOME:-/nonexistent}" "${ANDROID_SDK_HOME:-/nonexistent}" -name debug.keystore \
+               2>/dev/null | head -1)
+          if [ -z "$ks" ]; then echo "::error::no debug.keystore found"; exit 1; fi
+          echo "debug key: $ks"
+          "$bt/apksigner" sign --ks "$ks" --ks-pass pass:android --key-pass pass:android \
+            --ks-key-alias androiddebugkey --out apk/32/GTRacing-32bit.apk apk/aligned32.apk
+          "$bt/apksigner" verify apk/32/GTRacing-32bit.apk
+          unzip -l apk/both/GTRacing-32-64bit.apk | grep "lib/" || true
+          ls -la apk/both apk/32
 
       - uses: actions/upload-artifact@v4
         if: steps.game.outputs.ok == '1'
