@@ -1,9 +1,12 @@
 # Builds the Android APK (android/README.md) on GitHub's machines.
 #
-# It needs the game's program, which is never in the repository: put a direct-download link to YOUR
-# GTRacingFreemiumHD (the file inside GTRacingFreemiumHD.app, version 1.3.4b) in the repository secret
-# GAME_EXE_URL (Settings > Secrets and variables > Actions).  Only that one file is needed to build; the
-# game's other files stay on your phone.  The APK is left as the run's artifact (Actions > the run > Artifacts).
+# It needs the game's program (GTRacingFreemiumHD, the file inside GTRacingFreemiumHD.app, version 1.3.4b), which
+# is never in this repository.  Either of:
+#   - a PRIVATE repository of yours named gtracing-game with that file at its top, and the secret
+#     GAME_REPO_TOKEN: a token that can read it (in Termux: gh secret set GAME_REPO_TOKEN --body "$(gh auth token)");
+#   - the secret GAME_EXE_URL: a direct-download link to the file.
+# Only that one file is needed to build; the game's other files stay on your phone.  The APK is left as the
+# run's artifact (Actions > the run > Artifacts).
 name: Android APK
 
 on:
@@ -18,20 +21,44 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: The game's program (secret GAME_EXE_URL)
-        id: game
+      - name: Which source has the game's program
+        id: src
         env:
+          GAME_REPO_TOKEN: ${{ secrets.GAME_REPO_TOKEN }}
           GAME_EXE_URL: ${{ secrets.GAME_EXE_URL }}
         run: |
-          if [ -z "$GAME_EXE_URL" ]; then
-            echo "::warning::No GAME_EXE_URL secret: nothing to build (see the top of .github/workflows/android.yml)"
+          if [ -n "$GAME_REPO_TOKEN" ]; then echo "from=repo" >> "$GITHUB_OUTPUT"
+          elif [ -n "$GAME_EXE_URL" ]; then echo "from=url" >> "$GITHUB_OUTPUT"
+          else echo "from=none" >> "$GITHUB_OUTPUT"; fi
+
+      - name: The game's program from the private repository gtracing-game
+        if: steps.src.outputs.from == 'repo'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ github.repository_owner }}/gtracing-game
+          token: ${{ secrets.GAME_REPO_TOKEN }}
+          path: gtracing-game
+
+      - name: The game's program (checked)
+        id: game
+        env:
+          FROM: ${{ steps.src.outputs.from }}
+          GAME_EXE_URL: ${{ secrets.GAME_EXE_URL }}
+        run: |
+          if [ "$FROM" = none ]; then
+            echo "::warning::No GAME_REPO_TOKEN or GAME_EXE_URL secret: nothing to build (see the top of .github/workflows/android.yml)"
             echo "ok=0" >> "$GITHUB_OUTPUT"
             exit 0
           fi
           mkdir -p GTRacingFreemiumHD.app
-          curl -fsSL --retry 3 -o GTRacingFreemiumHD.app/GTRacingFreemiumHD "$GAME_EXE_URL"
+          if [ "$FROM" = repo ]; then
+            mv gtracing-game/GTRacingFreemiumHD GTRacingFreemiumHD.app/GTRacingFreemiumHD
+            rm -rf gtracing-game
+          else
+            curl -fsSL --retry 3 -o GTRacingFreemiumHD.app/GTRacingFreemiumHD "$GAME_EXE_URL"
+          fi
           if ! echo "eaeca1915d8b0a250583afed587f61ecb85a728a  GTRacingFreemiumHD.app/GTRacingFreemiumHD" | sha1sum -c --quiet -; then
-            echo "::error::The file GAME_EXE_URL gives is not GTRacingFreemiumHD 1.3.4b (wrong SHA-1; a share page instead of the file itself?)"
+            echo "::error::The file is not GTRacingFreemiumHD 1.3.4b (wrong SHA-1; with GAME_EXE_URL: a share page instead of the file itself?)"
             head -c 200 GTRacingFreemiumHD.app/GTRacingFreemiumHD | strings | head -3
             exit 1
           fi
