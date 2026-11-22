@@ -22,9 +22,7 @@
    Testing: GT_LAN_IP (net.c) gives the room code of that address with no port mapping;
    GT_P2P_CODE_FILE=<file> is used instead of the clipboard (written by the host, read by the joiner). */
 #define _CRT_RAND_S                       /* rand_s: the session keys */
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#include <iphlpapi.h>
+#include "plat_net.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -155,6 +153,10 @@ static void clip_put(const char *s)
         }
         return;
     }
+#ifndef _WIN32
+    SDL_SetClipboardText(s);
+    return;
+#else
     if (!OpenClipboard(NULL))
         return;
     EmptyClipboard();
@@ -169,6 +171,7 @@ static void clip_put(const char *s)
             GlobalFree(h);
     }
     CloseClipboard();
+#endif
 }
 
 static int clip_get(char *out, size_t cap)
@@ -184,6 +187,17 @@ static int clip_get(char *out, size_t cap)
         fclose(i);
         return n > 0;
     }
+#ifndef _WIN32
+    char *t = SDL_HasClipboardText() ? SDL_GetClipboardText() : NULL;
+    if (t) {
+        size_t i = 0;
+        for (; t[i] && i < cap - 1; i++)
+            out[i] = (u8)t[i] < 128 ? t[i] : ' ';
+        out[i] = 0;
+        SDL_free(t);
+    }
+    return out[0] != 0;
+#else
     if (!IsClipboardFormatAvailable(CF_UNICODETEXT) || !OpenClipboard(NULL))
         return 0;
     HANDLE h = GetClipboardData(CF_UNICODETEXT);
@@ -197,6 +211,7 @@ static int clip_get(char *out, size_t cap)
     }
     CloseClipboard();
     return out[0] != 0;
+#endif
 }
 
 /* the way to the internet */
@@ -211,6 +226,26 @@ static int is_private(u32 ip_be)
 /* the gateway and local address the internet traffic takes (a VPN's when one is on) */
 static int default_route(u32 *gw_be, u32 *local_be)
 {
+#ifndef _WIN32
+    /* Android has no routing table an app may read: the local address the internet traffic leaves from (a UDP
+       socket "connected" to a public address sends nothing), and the router at .1 of its /24, the usual home
+       network's */
+    SOCKET u = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    struct sockaddr_in d = {0}, me = {0};
+    socklen_t ml = sizeof me;
+    d.sin_family = AF_INET;
+    d.sin_port = htons(53);
+    d.sin_addr.s_addr = inet_addr("8.8.8.8");
+    int ok = u != INVALID_SOCKET && !connect(u, (struct sockaddr *)&d, sizeof d) &&
+             !getsockname(u, (struct sockaddr *)&me, &ml) && me.sin_addr.s_addr;
+    if (u != INVALID_SOCKET)
+        closesocket(u);
+    if (!ok)
+        return 0;
+    *local_be = me.sin_addr.s_addr;
+    *gw_be = htonl((ntohl(me.sin_addr.s_addr) & 0xFFFFFF00u) | 1u);
+    return 1;
+#else
     MIB_IPFORWARDROW r;
     if (GetBestRoute(inet_addr("8.8.8.8"), 0, &r) != NO_ERROR)
         return 0;
@@ -224,14 +259,14 @@ static int default_route(u32 *gw_be, u32 *local_be)
                 *local_be = ((struct sockaddr_in *)a->FirstUnicastAddress->Address.lpSockaddr)->sin_addr.s_addr;
     free(aa);
     return *gw_be != 0;
+#endif
 }
 
 /* NAT-PMP (RFC 6886): the external address, then a UDP mapping; 0 on no answer */
 static int natpmp(u32 gw_be, u16 port, u32 lifetime, u32 *ext_ip, u16 *ext_port)
 {
     SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    DWORD to = 300;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&to, sizeof to);
+    gt_sock_timeout(s, SO_RCVTIMEO, 300);
     struct sockaddr_in g = {0};
     g.sin_family = AF_INET;
     g.sin_addr.s_addr = gw_be;
@@ -271,9 +306,8 @@ static int natpmp(u32 gw_be, u16 port, u32 lifetime, u32 *ext_ip, u16 *ext_port)
 static int http(u32 ip_be, u16 port, const char *req, char *out, int cap, u32 *local_be)
 {
     SOCKET s = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
-    DWORD to = 3000;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&to, sizeof to);
-    setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, (const char *)&to, sizeof to);
+    gt_sock_timeout(s, SO_RCVTIMEO, 3000);
+    gt_sock_timeout(s, SO_SNDTIMEO, 3000);
     struct sockaddr_in a = {0};
     a.sin_family = AF_INET;
     a.sin_addr.s_addr = ip_be;
@@ -365,8 +399,7 @@ static int upnp(u32 gw_be, u16 *port, u32 *ext_ip, u16 *ext_port)
 {
     /* SSDP: the gateway's description URL */
     SOCKET s = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    DWORD to = 700;
-    setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, (const char *)&to, sizeof to);
+    gt_sock_timeout(s, SO_RCVTIMEO, 700);
     struct sockaddr_in m = {0};
     m.sin_family = AF_INET;
     m.sin_addr.s_addr = inet_addr("239.255.255.250");
@@ -766,6 +799,7 @@ static void stype_update_hook(CPU *c)
    While a form is open pcinput.c gives it the keyboard: text, Backspace, Ctrl+V, Enter = OK, Esc = close; a form
    whose menu stopped updating (left by a click elsewhere) closes itself. */
 
+#undef NAME_MAX                            /* <limits.h>'s, on POSIX */
 #define NAME_MAX 16
 #define GT_UPDATE_SLOT (0x785f78u + 0x1c)          /* GameTypeMenu */
 #define GT_UPDATE_FN 0x1bb57cu

@@ -465,6 +465,12 @@ A clean build of either kind has no compiler warnings (`-Wall -Wextra`). Every c
 `runtime/` and the generated code) uses `-ffile-prefix-map=<project folder>=.`, so no build-machine path is
 embedded in the exe or its debug info.
 
+### Android
+
+An Android build (`armeabi-v7a`, a phone that runs 32-bit apps) is made from the same sources: the Win32 calls
+have POSIX meanings there (`host/core/plat.h`), and the game's OpenGL ES calls go to the phone's own OpenGL ES.
+How to build it, install it and copy the game to the phone: [android/README.md](android/README.md).
+
 ### Running a build
 
 ```

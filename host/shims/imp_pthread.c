@@ -7,7 +7,7 @@
    pthread_t is the address of a host ThreadRec. */
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "abi.h"
 #include "rt.h"

@@ -12,7 +12,7 @@
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "abi.h"
 #include "rt.h"

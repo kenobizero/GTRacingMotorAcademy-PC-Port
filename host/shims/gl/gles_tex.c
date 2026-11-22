@@ -5,11 +5,10 @@
      drivers do not have, unpacked to RGBA8 (PVRTC_FAST, optimisation pass 6: the same bytes, checked by --selftest);
    - every level made goes to glenhance.c (glx_tex_level: anisotropic filtering).
    Split from gles.c (the calls, the state, the vertex arrays and the shaders). */
-#include <emmintrin.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "gl.h"
 #include "gles_internal.h"

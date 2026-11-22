@@ -11,6 +11,31 @@
 #include "arm_rt.h"
 #include "layout.h"
 
+#ifndef _WIN32                     /* the C library's Microsoft names the host uses (Android: posixwin.h has the rest) */
+#include <strings.h>
+#include <string.h>
+#include <stdio.h>
+#include <time.h>
+#ifndef _stricmp
+#define _stricmp strcasecmp
+#define _strnicmp strncasecmp
+#define _strdup strdup
+#endif
+#define _fseeki64 fseeko
+#define _ftelli64 ftello
+#define strtok_s strtok_r
+#define _mkgmtime timegm
+#define _fileno fileno
+#define localtime_s(tm, t) (localtime_r((t), (tm)) ? 0 : 1)
+#define gmtime_s(tm, t) (gmtime_r((t), (tm)) ? 0 : 1)
+static inline void *_aligned_malloc(size_t n, size_t align)
+{
+    void *p = NULL;
+    return posix_memalign(&p, align < sizeof(void *) ? sizeof(void *) : align, n) ? NULL : p;
+}
+#define _aligned_free free
+#endif
+
 /* threads */
 
 /* A guest setjmp buffer (setjmp/sigsetjmp) and the host frame that made it. */

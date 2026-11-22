@@ -20,8 +20,7 @@
    Everything runs from a perform on the thread that made the session (like GameKit's main run loop
    callbacks), every 15 ms while a session lives: no extra thread, no locks.  With the network off the
    session fails at once (session:didFailWithError:), which the game shows as "Bluetooth is off". */
-#include <winsock2.h>
-#include <ws2tcpip.h>
+#include "plat_net.h"
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -145,9 +144,11 @@ static int transport_up(void)
             closesocket(u);
         return 0;
     }
+#ifdef _WIN32
     BOOL no = FALSE;
     DWORD got;
     WSAIoctl(u, _WSAIOW(IOC_VENDOR, 12), &no, sizeof no, NULL, 0, &got, NULL, NULL);
+#endif
     nonblock(u);
     SOCKET t = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
     w.sin_port = 0;

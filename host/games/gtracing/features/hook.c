@@ -1,5 +1,5 @@
 /* hook.c -- the vtable-slot hooks and in-place changes of game data the features make (game.h). */
-#include <windows.h>
+#include "plat.h"
 
 #include "features.h"
 #include "game.h"

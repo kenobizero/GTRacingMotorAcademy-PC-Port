@@ -6,7 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "hmap.h"
 #include "ns.h"
@@ -31,6 +31,31 @@ double ns_now(void)
    (eagl.c) and the main loop (uikit.c) spin the last 0.5-1.5 ms of each wait in a loop of
    SwitchToThread / run-loop polls, which a profile at 60 fps showed as ~11 % of the main thread spinning.
    Without such a timer (older Windows), Sleep.  GT_PRECISE_WAIT=0: Sleep and the spins. */
+#ifndef _WIN32
+/* POSIX (Android): nanosleep wakes within tens of microseconds, so it is the precise wait */
+int ns_precise_wait_on(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("GT_PRECISE_WAIT");
+        on = !(e && *e == '0');
+        rt_log("[time] precise waits: %s\n", on ? "nanosleep" : "whole milliseconds");
+    }
+    return on;
+}
+void ns_wait(double seconds)
+{
+    if (seconds <= 0)
+        return;
+    if (!ns_precise_wait_on()) {
+        Sleep((DWORD)(seconds * 1000.0));
+        return;
+    }
+    struct timespec t = {(time_t)seconds, (long)((seconds - (double)(time_t)seconds) * 1e9)};
+    while (nanosleep(&t, &t) && errno == EINTR) {
+    }
+}
+#else
 #ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
 #define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
 #endif
@@ -71,6 +96,7 @@ void ns_wait(double seconds)
     else
         Sleep((DWORD)(seconds * 1000.0));
 }
+#endif
 
 int ns_is_date(id o) { return o && rd32(o) == cls_date; }
 id ns_date(double t)

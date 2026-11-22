@@ -49,7 +49,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "features.h"
 #include "game.h"
@@ -316,6 +316,18 @@ void display_menu_layout(u32 pl)
     }
 }
 
+#ifndef _WIN32
+/* Android: an app cannot start itself again from here; the choices are in gtracing.ini already (ini_set), so the
+   game closes and the player opens it again */
+static void restart(void)
+{
+    rt_log("[display] restart: the app closes, the new settings apply when it is opened again\n");
+    SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, GT_GAME_TITLE,
+                             "The new resolution and screen shape apply the next time the game starts.  "
+                             "The game closes now: open it again.", ui_window);
+    ui_quit = 1;
+}
+#else
 static void restart(void)
 {
     char exe[MAX_PATH], cwd[MAX_PATH], pid[16];
@@ -351,6 +363,7 @@ static void restart(void)
     free(cmd);
     _putenv_s("GT_WAIT_PID", "");
 }
+#endif
 
 /* a click on the page (released on it); ps: the control's path */
 void display_menu_click(u32 pl, const char *ps)
