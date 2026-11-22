@@ -226,6 +226,11 @@ static void bench_frame(void)
 /* GT_GL_STATS=1 (testing, pass 4): the time present() spends in its state queries, its attribute push / pop and
    the swap, every 600 frames (the queries make a threaded driver finish the frame's commands first) */
 static int pt_on = -1;
+#if !GT_GL_DESKTOP
+/* the [perf] line's parts of a frame (Android) */
+static double pf_end, pf_wait0, pf_work, pf_wait, pf_swap, pf_max;
+static unsigned pf_n;
+#endif
 static LARGE_INTEGER pt_freq;
 static double pt_acc[4];
 static u32 pt_frames;
@@ -373,6 +378,7 @@ static void present(Ctx *x)
     p_glEnd();
 #else
     gla_quad_draw(x->tex, vx, vy, W, H);
+#if !GT_GL_DESKTOP
     {
         /* the frame rate, every 600 frames: with the low reads the fault handler did meanwhile (each a signal,
            ~10 us: a hot one costs frames) */
@@ -383,13 +389,17 @@ static void present(Ctx *x)
             LARGE_INTEGER now, fq;
             QueryPerformanceCounter(&now);
             QueryPerformanceFrequency(&fq);
-            if (t_last.QuadPart)
-                rt_log("[perf] %.1f fps over %u frames; low reads %u\n",
+            if (t_last.QuadPart && pf_n)
+                rt_log("[perf] %.1f fps over %u frames; a frame: game %.1f ms, wait %.1f, swap %.1f (longest %.1f); "
+                       "low reads %u\n",
                        (double)(frames - f_last) * (double)fq.QuadPart / (double)(now.QuadPart - t_last.QuadPart),
-                       frames - f_last, gt_low_reads - low_last);
+                       frames - f_last, pf_work * 1000 / pf_n, pf_wait * 1000 / pf_n, pf_swap * 1000 / pf_n,
+                       pf_max * 1000, gt_low_reads - low_last);
             t_last = now, f_last = frames, low_last = gt_low_reads;
+            pf_work = pf_wait = pf_swap = pf_max = 0, pf_n = 0;
         }
     }
+#endif
     if (frames < 3) {                            /* the first frames' picture path, for the log */
         u32 e = p_glGetError();
         gles_bind_fb(GL_READ_FRAMEBUFFER, ms ? ms : x->src_fbo);
@@ -417,6 +427,9 @@ static void present(Ctx *x)
         next_t = 0;                       /* GT_BENCH_UNCAP: no cap in the span, the next capped frame starts afresh */
     else if (per > 0) {
         double now = ns_now();
+#if !GT_GL_DESKTOP
+        pf_wait0 = now;
+#endif
         if (next_t == 0 || next_t < now - per)
             next_t = now;
         next_t += per;
@@ -433,6 +446,11 @@ static void present(Ctx *x)
         while (ns_now() < next_t)
             SwitchToThread();
     }
+#if !GT_GL_DESKTOP
+    double pf_wait1 = ns_now();
+    if (pf_wait0 == 0)
+        pf_wait0 = pf_wait1;
+#endif
     t0 = pt_on > 0 ? pt_now() : 0;
     if (ui_minimized())
         p_glFlush();                      /* BACKGROUND_THROTTLE: nothing to show; the frame's work still goes out */
@@ -441,6 +459,22 @@ static void present(Ctx *x)
         SDL_GL_SwapWindow(ui_window);
 #else
         gla_swap();
+    {
+        /* the frame's time in three parts, for the [perf] line: the game's work (the game's own code and its GL
+           calls, from the last frame's swap to this frame's cap), the cap's wait, the swap; and the work and the
+           swap told to the system (PERF_HINT, android_perf.c) */
+        extern void gt_android_perf_frame(double work_s, double period_s);
+        double end = ns_now();
+        if (pf_end) {
+            double work = pf_wait0 - pf_end, swap = end - pf_wait1;
+            pf_work += work, pf_wait += pf_wait1 - pf_wait0, pf_swap += swap, pf_n++;
+            if (work + swap > pf_max)
+                pf_max = work + swap;
+            if (!ui_background_fps())
+                gt_android_perf_frame(work + swap, per);
+        }
+        pf_end = end, pf_wait0 = 0;
+    }
 #endif
     pt_add(2, t0);
     t0 = pt_on > 0 ? pt_now() : 0;
