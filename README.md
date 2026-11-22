@@ -1,4 +1,4 @@
-# GT Racing: Motor Academy HD · PC Port
+# GT Racing: Motor Academy HD · Android Port
 
 <p align="center">
   <a href="https://github.com/Adriansyah101/GTRacingMotorAcademyRecomp/releases/latest"><img src="https://img.shields.io/github/v/release/Adriansyah101/GTRacingMotorAcademyRecomp" alt="Latest release"></a>
