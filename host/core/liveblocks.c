@@ -31,6 +31,13 @@
 #include "liveblocks.h"
 #include "rt.h"
 
+#if defined(__LP64__) && defined(__ANDROID__)
+/* a 64-bit host: the heap under these wrappers is lowmem.c's (below 4 GB, where the game can address it) */
+#define __real_malloc gt_lm_malloc
+#define __real_calloc gt_lm_calloc
+#define __real_realloc gt_lm_realloc
+#define __real_free gt_lm_free
+#endif
 void *__real_malloc(size_t n);
 void *__real_calloc(size_t n, size_t m);
 void *__real_realloc(void *p, size_t n);

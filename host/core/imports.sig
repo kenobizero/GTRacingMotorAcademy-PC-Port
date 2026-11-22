@@ -103,19 +103,19 @@ puts                    i  i
 putchar                 i  i
 perror                  v  i
 fopen                   i  ii
-fclose                  i  i      =fclose
-fread                   i  iiii   =fread
+fclose                  i  i      =h_fclose
+fread                   i  iiii   =h_fread
 fwrite                  i  iiii
 fseek                   i  iii
-ftell                   i  i      =ftell
-rewind                  v  i      =rewind
-feof                    i  i      =feof
-ferror                  i  i      =ferror
-fflush                  i  i      =fflush
-fgets                   i  iii    =fgets
+ftell                   i  i      =h_ftell
+rewind                  v  i      =h_rewind
+feof                    i  i      =h_feof
+ferror                  i  i      =h_ferror
+fflush                  i  i      =h_fflush
+fgets                   i  iii    =h_fgets
 fputc                   i  ii
 fputs                   i  ii
-fileno                  i  i      =_fileno
+fileno                  i  i      =h_fileno
 setvbuf                 i  iiii
 remove                  i  i
 

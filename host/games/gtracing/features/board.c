@@ -993,7 +993,7 @@ static int cloud_failed(int status)
                    "friends', next try in 10 min\n", status);
         else if (status == -1)
             rt_log("[board] cloud: no answer (offline, or the server is down; WinHTTP %lu): the board stays this "
-                   "PC's and the friends', next try in a minute\n", cl_err);
+                   "PC's and the friends', next try in a minute\n", (unsigned long)cl_err);
         else if (status == -2)
             rt_log("[board] cloud: the server's answer is not a leaderboard: the board stays local\n");
         else

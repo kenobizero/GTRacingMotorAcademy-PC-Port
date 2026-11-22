@@ -100,7 +100,7 @@ static void c_setCurrent(CPU *c)
     if (ok)
         gles_context_current(ctx ? CX(ctx)->gl : NULL);    /* the vertex state shadow follows the context */
     if (!ok || rt_trace)
-        rt_log("[eagl] thread %lu: current context 0x%08x%s%s\n", GetCurrentThreadId(), ctx, ok ? "" : " FAILED: ",
+        rt_log("[eagl] thread %lu: current context 0x%08x%s%s\n", (unsigned long)GetCurrentThreadId(), ctx, ok ? "" : " FAILED: ",
                ok ? "" : SDL_GetError());
     ret_i(c, ok ? 1 : 0);
 }

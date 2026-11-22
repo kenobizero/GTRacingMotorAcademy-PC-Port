@@ -167,11 +167,19 @@ static int bind_weak(void *ctx, uint32_t slot, const char *name, int ordinal, in
     return bind_cb(ctx, slot, name, ordinal, addend, flags, 0);
 }
 
+#if defined(__aarch64__)
+extern u32 gt_low_mirror_lo;                /* fault_android.c LOW_MIRROR: the low bytes at their own addresses too */
+#endif
 static void copy_range(u32 lo, u32 hi, const uint8_t *src)
 {
     if (lo < GT_LOW_END) {
         u32 e = hi < GT_LOW_END ? hi : GT_LOW_END;
         memcpy(GP(lo + GT_LOW_DELTA), src, e - lo);
+#if defined(__aarch64__)
+        u32 m = gt_low_mirror_lo > lo ? gt_low_mirror_lo : lo;
+        if (gt_low_mirror_lo && m < e)
+            memcpy(GP(m), src + (m - lo), e - m);
+#endif
     }
     if (hi > GT_RESERVE_START) {
         u32 s = lo > GT_RESERVE_START ? lo : GT_RESERVE_START;

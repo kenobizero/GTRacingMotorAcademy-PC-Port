@@ -489,7 +489,16 @@ static int host_main(int argc, char **argv)
     {
         Dl_info di;
         if (dladdr((void *)host_main, &di) && di.dli_fbase)
-            rt_log("[main] libmain.so at %p\n", di.dli_fbase);
+            rt_log("[main] %s at %p\n", sizeof(void *) == 8 ? "libgame.so" : "libmain.so", di.dli_fbase);
+#if defined(__LP64__)
+        {
+            void gt_lowmem_report(void);
+            gt_lowmem_report();
+            if ((uintptr_t)di.dli_fbase >> 32)
+                rt_fatal("libgame.so was loaded above 4 GB (at %p): the game cannot address the host there",
+                         di.dli_fbase);
+        }
+#endif
     }
     if ((u32)(uintptr_t)gt_reserve_start != GT_RESERVE_START)
         rt_fatal("The game's memory range 0x%x..0x%x could not be mapped (%s).  This device's 32-bit processes "

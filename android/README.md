@@ -5,7 +5,7 @@ it is for Windows, and the host (`host/`) runs on Android's own libraries:
 
 | | Windows | Android |
 |---|---|---|
-| Process | 32-bit x86 | 32-bit ARM (`armeabi-v7a`) |
+| Process | 32-bit x86 | 32-bit ARM (`armeabi-v7a`) and 64-bit ARM (`arm64-v8a`) in one APK |
 | System calls | Win32 | POSIX (`host/core/posixwin.h`: the Win32 calls the host makes, on bionic) |
 | The game's address range | the exe's first section (`gt.ld`, `reserve.S`) | `mmap` with `MAP_FIXED_NOREPLACE` as `libmain.so` loads (`host/core/fault_android.c`) |
 | Graphics | desktop OpenGL 2.1 under the game's GLES calls | OpenGL ES 3.0: the game's ES 2 calls passed straight through (`gles_android.c` has the contexts and the picture) |
@@ -17,11 +17,14 @@ Nothing is emulated while the game runs, on Android either.
 
 ## Requirements
 
-- **A phone that runs 32-bit apps.** The host keeps the game's 32-bit pointers (guest and host addresses are the
-  same words), so it is an `armeabi-v7a` app. Most phones made until about 2022 run them (for example the
-  Snapdragon 8xx chips up to the 888 and 870). Some later chips run them on part of their cores only, and the
-  newest have no 32-bit mode at all (Snapdragon 8 Gen 3 and later, Pixel 7 and later): the app does not
-  install there.
+- **A 32-bit or a 64-bit ARM phone.** The APK has both; a phone takes its own (64-bit when it can). The host
+  keeps the game's 32-bit pointers (guest and host addresses are the same words):
+  - `armeabi-v7a`: as it is; phones up to about 2022 (the Snapdragon 8xx chips up to the 888 and 870);
+  - `arm64-v8a`: the 64-bit host keeps everything the game can see in the process's lowest 4 GB
+    (`host/core/lowmem.c`: the heap, the threads' stacks; `android/app/jni/stub.c` loads the host,
+    `libgame.so`, into a range below 4 GB). The newest chips run only this one (Snapdragon 8 Gen 3 and later,
+    Pixel 7 and later). The build's second artifact, `GTRacing-android-apk-32bit`, is the 32-bit one alone (for
+    a phone that runs both, to compare).
 - Android 10 or later, OpenGL ES 3.0.
 - About 1.5 GB of storage for the game.
 - Your own copy of the iPad game `GTRacingFreemiumHD.app`, version 1.3.4b (the same build as the PC port:
@@ -111,11 +114,13 @@ Display page changes that need a restart close the app; open it again.
 
 ## Known gaps
 
-- **Not tested on a phone yet.** The host compiles for `armeabi-v7a` against Android's own headers, and the
-  Windows build is unchanged, but the first runs will find things to fix. Reports with `GTRacing/gtracing.log`
-  are welcome.
+- **The 64-bit build is new.** It compiles for `arm64-v8a` against Android's own headers, its allocator and its
+  fault handler's A64 loads are tested (lowmem.c, fault_a64.h), but the first runs on a phone will find things to
+  fix: a host address above 4 GB that reaches the game is logged with its line (`[lowmem] LOW_CHECK`).
+  Reports with `GTRacing/gtracing.log` are welcome.
 - No crash dump: the log has the fault's lines (`[FAULT]`), and Android's own tombstone the rest. The log's
-  `[main] libmain.so at ...` line turns a host address into a function: `llvm-addr2line` (in the NDK) on the
-  unstripped `libmain.so` under `android/app/build/intermediates/cxx/`, with the address minus that base.
+  `[main] libmain.so at ...` line (`libgame.so` on 64-bit) turns a host address into a function:
+  `llvm-addr2line` (in the NDK) on the unstripped library under `android/app/build/intermediates/cxx/`, with
+  the address minus that base.
 - Online play opens its port with UPnP / NAT-PMP as on the PC; the router's address is guessed (`.1` of the
   phone's network), as Android lets an app read no routing table.

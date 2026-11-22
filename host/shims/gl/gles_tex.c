@@ -39,7 +39,7 @@ void h_glTexImage2D(u32 target, u32 level, u32 internal, u32 w, u32 h, u32 borde
 {
     if (format == GL_BGRA_EXT && type == GL_UNSIGNED_BYTE) {
         if (es_bgra < 0) {
-            const char *e = (const char *)GP(p_glGetString(GL_EXTENSIONS));
+            const char *e = (const char *)(uintptr_t)p_glGetString(GL_EXTENSIONS);
             es_bgra = e && strstr(e, "GL_EXT_texture_format_BGRA8888") != NULL;
             rt_log("[gl] BGRA textures: %s\n", es_bgra ? "the GPU's own" : "turned to RGBA");
         }
@@ -390,7 +390,7 @@ void h_glCompressedTexImage2D(u32 target, u32 level, u32 internal, u32 w, u32 h,
         if ((int)w != pw)
             for (u32 y = 1; y < h; y++)
                 memmove(rgba + y * w * 4, rgba + y * (u32)pw * 4, w * 4);
-        u32 align;
+        u32 align = 4;
         p_glGetIntegerv(GL_UNPACK_ALIGNMENT, GA(&align));
         p_glPixelStorei(GL_UNPACK_ALIGNMENT, 1);
         p_glTexImage2D(target, level, GL_RGBA, w, h, border, GL_RGBA, GL_UNSIGNED_BYTE, GA(rgba));

@@ -27,6 +27,7 @@
 #include "rt.h"
 
 char *gt_reserve_start;                    /* the range's first byte, once mapped (main.c checks it) */
+u32 gt_low_mirror_lo;                      /* 64-bit host: where the low bytes are mapped from (loader.c), 0 none */
 static int reserve_errno;
 
 __attribute__((constructor(101))) static void reserve_range(void)
@@ -44,12 +45,30 @@ __attribute__((constructor(101))) static void reserve_range(void)
         return;
     }
     gt_reserve_start = p;
+#if defined(__aarch64__)
+    /* LOW_MIRROR (64-bit host): the low bytes at their own addresses too, as far down as the kernel maps
+       (mmap_min_addr: 0x8000 on most phones); a read below that is still the handler's */
+    static const u32 tries[] = {0x8000, 0x10000};
+    for (int i = 0; i < 2; i++) {
+        void *lo = mmap((void *)(uintptr_t)tries[i], GT_RESERVE_START - tries[i], PROT_READ | PROT_WRITE,
+                        MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED_NOREPLACE, -1, 0);
+        if (lo == (void *)(uintptr_t)tries[i]) {
+            gt_low_mirror_lo = tries[i];
+            break;
+        }
+        if (lo != MAP_FAILED)
+            munmap(lo, GT_RESERVE_START - tries[i]);
+    }
+#endif
 }
 
 int gt_reserve_error(void) { return reserve_errno; }
 
 /* the low read */
 
+volatile u32 gt_low_reads;                 /* the low reads done here (eagl.c logs them with the frame rate) */
+
+#if defined(__arm__)
 typedef struct {
     int rt, rt2;                           /* destination(s); rt2 -1 unless LDRD */
     int size, sign;                        /* bytes 1 2 4 (8 for LDRD), sign-extended */
@@ -187,8 +206,6 @@ static void it_advance(mcontext_t *m)
     m->arm_cpsr = cpsr;
 }
 
-volatile u32 gt_low_reads;                 /* the low reads done here (eagl.c logs them with the frame rate) */
-
 static int fix_low_read(mcontext_t *m, u32 addr)
 {
     u32 pc = m->arm_pc;
@@ -234,30 +251,36 @@ static int fix_low_read(mcontext_t *m, u32 addr)
     return 1;
 }
 
+#define M_PC(m) ((unsigned long)(m)->arm_pc)
+#define M_LR(m) ((unsigned long)(m)->arm_lr)
+#define M_WRITE(m) (((m)->error_code & (1u << 11)) != 0)    /* the data abort's FSR: bit 11 set for a write */
+#elif defined(__aarch64__)
+#include "fault_a64.h"
+#endif
+
 /* faults */
 
 static void on_fault(int sig, siginfo_t *si, void *ucv)
 {
     ucontext_t *uc = ucv;
     mcontext_t *m = &uc->uc_mcontext;
-    u32 addr = (u32)(uintptr_t)si->si_addr;
-    /* error_code is the data abort's FSR: bit 11 set for a write */
-    if (sig == SIGSEGV && addr >= GT_LOW_START && addr < GT_LOW_END && !(m->error_code & (1u << 11)) &&
-        fix_low_read(m, addr))
+    uintptr_t full = (uintptr_t)si->si_addr;
+    u32 addr = (u32)full;
+    if (sig == SIGSEGV && full >= GT_LOW_START && full < GT_LOW_END && !M_WRITE(m) && fix_low_read(m, addr))
         return;
     static char why[512];
-    const char *what = sig == SIGSEGV || sig == SIGBUS ? ((m->error_code & (1u << 11)) ? "write" : "read") : NULL;
+    const char *what = sig == SIGSEGV || sig == SIGBUS ? (M_WRITE(m) ? "write" : "read") : NULL;
     if (what) {
-        const char *imp = rt_addr_name(addr);
-        rt_log("\n[FAULT] %s of 0x%08x at host 0x%08lx (lr 0x%08lx)%s%s\n", what, addr, m->arm_pc, m->arm_lr,
-               imp ? " -- import address of " : "", imp ? imp : "");
-        snprintf(why, sizeof why, "The game crashed: a bad memory %s at 0x%08x (host 0x%08lx).", what, addr,
-                 m->arm_pc);
+        const char *imp = full >> 32 ? NULL : rt_addr_name(addr);
+        rt_log("\n[FAULT] %s of 0x%08lx at host 0x%08lx (lr 0x%08lx)%s%s\n", what, (unsigned long)full, M_PC(m),
+               M_LR(m), imp ? " -- import address of " : "", imp ? imp : "");
+        snprintf(why, sizeof why, "The game crashed: a bad memory %s at 0x%08lx (host 0x%08lx).", what,
+                 (unsigned long)full, M_PC(m));
     } else {
-        rt_log("\n[FAULT] signal %d at host 0x%08lx (lr 0x%08lx)\n", sig, m->arm_pc, m->arm_lr);
+        rt_log("\n[FAULT] signal %d at host 0x%08lx (lr 0x%08lx)\n", sig, M_PC(m), M_LR(m));
         snprintf(why, sizeof why, "The game crashed: %s (signal %d at host 0x%08lx).",
                  sig == SIGILL ? "an illegal instruction" : sig == SIGFPE ? "an arithmetic fault" : "a fault", sig,
-                 m->arm_pc);
+                 M_PC(m));
     }
     RtThread *t = rt_thread_if();
     if (t) {
@@ -268,8 +291,8 @@ static void on_fault(int sig, siginfo_t *si, void *ucv)
                c->r[14]);
     }
     gles_fault_dump();
-    rt_log("(the host address minus libmain.so's base, in the log's [main] line, names the function: "
-           "llvm-addr2line -e libmain.so)\n");
+    rt_log("(the host address minus the library's base, in the log's [main] line, names the function: "
+           "llvm-addr2line -e %s)\n", sizeof(void *) == 8 ? "libgame.so" : "libmain.so");
     gt_crash(4, why);
 }
 
@@ -278,9 +301,15 @@ void gt_fault_thread_init(void)
 {
     static const size_t n = 64 * 1024;
     stack_t ss;
+#if defined(__aarch64__)
+    ss.ss_sp = gt_low_map(n);              /* lowmem.c: the handler's locals in the game's 4 GB too */
+    if (!ss.ss_sp)
+        return;
+#else
     ss.ss_sp = mmap(NULL, n, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (ss.ss_sp == MAP_FAILED)
         return;
+#endif
     ss.ss_size = n;
     ss.ss_flags = 0;
     sigaltstack(&ss, NULL);

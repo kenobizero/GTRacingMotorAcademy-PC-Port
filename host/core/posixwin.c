@@ -11,6 +11,9 @@
 #include <sys/uio.h>
 
 #include "plat.h"
+#if defined(__LP64__)
+void *gt_low_map_prot(size_t n, int prot);    /* lowmem.c */
+#endif
 
 static __thread DWORD last_error;
 DWORD GetLastError(void) { return last_error; }
@@ -358,6 +361,12 @@ void *VirtualAlloc(void *at, SIZE_T n, DWORD type, DWORD prot)
         return mprotect(at, n, prot_of(prot)) ? NULL : at;
     }
     int flags = MAP_PRIVATE | MAP_ANONYMOUS;
+#if defined(__LP64__)
+    if (!at) {                        /* a 64-bit host: below 4 GB, where the game can address it (lowmem.c) */
+        void *q = gt_low_map_prot(n, (type & MEM_COMMIT) ? prot_of(prot) : PROT_NONE);
+        return q ? gt_va_note(q, n) : NULL;
+    }
+#endif
     if (at)
         flags |= MAP_FIXED_NOREPLACE;
     void *p = mmap(at, n, (type & MEM_COMMIT) ? prot_of(prot) : PROT_NONE, flags, -1, 0);

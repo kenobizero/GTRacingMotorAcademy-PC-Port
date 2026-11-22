@@ -6,8 +6,11 @@
 #     the game's menu files MZlN_MiNH_*.FAK and LHBMiNHF*.FAK next to it), and the secret
 #     GAME_REPO_TOKEN: a token that can read it (in Termux: gh secret set GAME_REPO_TOKEN --body "$(gh auth token)");
 #   - the secret GAME_EXE_URL: a direct-download link to the file.
-# Only that one file is needed to build; the game's other files stay on your phone.  The APK is left as the
-# run's artifact (Actions > the run > Artifacts).
+# Only that one file is needed to build; the game's other files stay on your phone.  Two APKs are left as the
+# run's artifacts (Actions > the run > Artifacts):
+#   GTRacing-android-apk        32-bit and 64-bit in one (a phone takes its own: 64-bit when it can; the
+#                               Snapdragon 8 Gen 3 and later run 64-bit only)
+#   GTRacing-android-apk-32bit  32-bit only (the same build without its 64-bit libraries)
 name: Android APK
 
 on:
@@ -118,10 +121,35 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease --no-daemon --stacktrace
 
+      - name: The two APKs (32 + 64-bit, and 32-bit only)
+        if: steps.game.outputs.ok == '1'
+        run: |
+          out=android/app/build/outputs/apk/release
+          bt=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)
+          mkdir -p apk/both apk/32
+          cp "$out/app-release.apk" apk/both/GTRacing-32-64bit.apk
+          # 32-bit only: the 64-bit libraries out, aligned and signed again (the build's own debug key)
+          cp "$out/app-release.apk" apk/tmp32.apk
+          zip -q -d apk/tmp32.apk 'lib/arm64-v8a/*'
+          "$bt/zipalign" -f -p 4 apk/tmp32.apk apk/aligned32.apk
+          "$bt/apksigner" sign --ks "$HOME/.android/debug.keystore" --ks-pass pass:android --key-pass pass:android \
+            --ks-key-alias androiddebugkey --out apk/32/GTRacing-32bit.apk apk/aligned32.apk
+          "$bt/apksigner" verify apk/32/GTRacing-32bit.apk
+          unzip -l apk/both/GTRacing-32-64bit.apk | grep "lib/" || true
+          ls -la apk/both apk/32
+
       - uses: actions/upload-artifact@v4
         if: steps.game.outputs.ok == '1'
         with:
           name: GTRacing-android-apk
-          path: android/app/build/outputs/apk/release/*.apk
+          path: apk/both/*.apk
+          retention-days: 7
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        if: steps.game.outputs.ok == '1'
+        with:
+          name: GTRacing-android-apk-32bit
+          path: apk/32/*.apk
           retention-days: 7
           if-no-files-found: error

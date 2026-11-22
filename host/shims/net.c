@@ -1285,9 +1285,12 @@ u32 h_inet_aton(u32 s, u32 out)
 }
 u32 h_inet_ntoa(u32 a)
 {
-    static __thread char buf[16];
+    /* the game's memory (a thread's own variables are not, on a 64-bit host): four in turn */
+    static char bufs[4][16];
+    static volatile LONG turn;
+    char *buf = bufs[(u32)InterlockedIncrement(&turn) & 3];
     const u8 *b = (const u8 *)&a;
-    snprintf(buf, sizeof buf, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
+    snprintf(buf, 16, "%u.%u.%u.%u", b[0], b[1], b[2], b[3]);
     return GA(buf);
 }
 u32 h_inet_ntop(u32 af, u32 src, u32 dst, u32 size)

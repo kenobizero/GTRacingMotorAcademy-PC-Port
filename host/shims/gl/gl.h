@@ -24,10 +24,24 @@
 #else
 void *gt_gl_current(void);              /* gles_android.c */
 #endif
+/* gt_glw: a word the driver takes or gives (an int, an enum, a pointer, a GLsizeiptr).  32 bits on a 32-bit host, as
+   gl_list.h writes them (u32).  On a 64-bit host (arm64-v8a) a pointer or a size is 64 bits and the bits above a
+   u32 argument are not defined, so the driver's pointer types take every u32 as a 64-bit word (zero-extended:
+   the game's memory and the host's are below 4 GB there, lowmem.c) and give one back: the u32 of gl_list.h stands
+   for gt_glw in the types below, and a result the host uses as a pointer (glGetString, glMapBufferRange) is whole. */
+#if defined(__LP64__)
+typedef uintptr_t gt_glw;
+#define u32 gt_glw
+#else
+typedef u32 gt_glw;
+#endif
 #define GLP(name, params, args) typedef void(GT_GLAPI *T_##name) params; extern T_##name p_##name;
 #define GLR(ret, name, params, args) typedef ret(GT_GLAPI *T_##name) params; extern T_##name p_##name;
 #define GLX(ret, name, params) typedef ret(GT_GLAPI *T_##name) params; extern T_##name p_##name;
 #include "gl_list.h"
+#if defined(__LP64__)
+#undef u32
+#endif
 
 /* OpenGL ES enums the desktop headers lack (the game passes them; gles.c, gles_tex.c translate them) */
 #ifndef GL_HALF_FLOAT_OES

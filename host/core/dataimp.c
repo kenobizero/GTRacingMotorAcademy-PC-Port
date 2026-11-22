@@ -93,11 +93,11 @@ u32 rt_data_import(const char *name)
     if (v || (v = cxx_data_import(name)))
         return v;
     if (!strcmp(name, "___stderrp"))
-        return cell(GA(stderr));
+        return cell(gt_file_handle(stderr));
     if (!strcmp(name, "___stdoutp"))
-        return cell(GA(stdout));
+        return cell(gt_file_handle(stdout));
     if (!strcmp(name, "___stdinp"))
-        return cell(GA(stdin));
+        return cell(gt_file_handle(stdin));
     if (!strcmp(name, "__DefaultRuneLocale"))
         return make_rune_locale();
     if (!strcmp(name, "_CGRectZero") || !strcmp(name, "_CGPointZero") || !strcmp(name, "_CGSizeZero") ||

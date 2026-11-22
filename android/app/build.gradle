@@ -1,4 +1,4 @@
-// GT Racing: Motor Academy HD on Android (armeabi-v7a).  Run  python -I android/prepare.py  first: it makes the
+// GT Racing: Motor Academy HD on Android (armeabi-v7a and arm64-v8a; -PgtAbis=armeabi-v7a for one).  Run  python -I android/prepare.py  first: it makes the
 // generated code from your game and fetches SDL 3 into android/SDL.
 plugins {
     id 'com.android.application'
@@ -16,12 +16,14 @@ android {
         versionCode 1
         versionName '1.0.0-android'
         ndk {
-            abiFilters 'armeabi-v7a'    // 32-bit only: the host keeps the game's 32-bit pointers (host/core/plat.h)
+            // both: a phone takes its own (64-bit when it can).  arm64-v8a keeps the game's memory below 4 GB
+            // (host/core/lowmem.c, jni/stub.c)
+            abiFilters(*((project.findProperty('gtAbis') ?: 'armeabi-v7a,arm64-v8a').toString().split(',')))
         }
         externalNativeBuild {
             cmake {
                 arguments '-DANDROID_STL=c++_static', '-DANDROID_PLATFORM=android-29'
-                targets 'main', 'SDL3-shared'
+                targets 'main', 'game', 'SDL3-shared'
             }
         }
     }

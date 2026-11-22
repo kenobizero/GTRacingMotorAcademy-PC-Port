@@ -526,7 +526,7 @@ static void thread_start(id t)
     LONG n = InterlockedIncrement(&live_threads);
     if (first || rt_trace || (v + 1) % 10 == 0)
         rt_log("[thread] NSThread -[%s %s] (%ld running, %u started)\n", objc_class_name(rd32(TH(t)->target)),
-               sel_name(TH(t)->sel), n, first ? 1 : v + 1);
+               sel_name(TH(t)->sel), (long)n, first ? 1 : v + 1);
     objc_retain(t);
     TH(t)->started = 1;
     u32 tid = 0;

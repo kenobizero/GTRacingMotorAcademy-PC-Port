@@ -41,7 +41,7 @@ static inline void *_aligned_malloc(size_t n, size_t align)
 /* A guest setjmp buffer (setjmp/sigsetjmp) and the host frame that made it. */
 typedef struct RtJmp {
     u32 guest_buf;
-    void *jb[5];               /* __builtin_setjmp buffer in the caller's host frame */
+    void *jb[RT_JB_WORDS];     /* RT_SETJMP buffer in the caller's host frame (arm_rt.h) */
     u32 r[16];                 /* guest registers at setjmp (r4-r11, sp, lr used) */
     u64 d[8];                  /* d8-d15 */
     RtFrame *top;              /* SjLj frame list at setjmp */
@@ -138,13 +138,35 @@ extern int rt_trace;                       /* --trace or GT_TRACE: log import ca
 #define rt_trace 0
 #endif
 
+/* the game's FILE values (imp_libc.c FILE_HANDLE): the C library's FILE pointer on a 32-bit host, a cell in the
+   game's memory that holds it on a 64-bit one */
+#include <stdio.h>
+u32 gt_file_handle(FILE *f);
+FILE *gt_file(u32 h);
+
 /* loader (loader.c) */
 int gt_load(const char *exe_path, char *err, size_t errsz);
 extern u32 gt_entry, gt_mh_header;
 
 /* Guest memory helpers (1:1 mapping). */
 #define GP(a) ((void *)(uintptr_t)(u32)(a))
+#if defined(__LP64__)
+/* a 64-bit host (lowmem.c): the host's memory is below 4 GB, so a host address is still a guest one; one above
+   (the C library's or a driver's own) is logged with the line that gave it (LOW_CHECK) */
+void gt_ga_high(const void *p, const char *file, int line);
+void *gt_low_map(size_t n);
+void *gt_low_map_prot(size_t n, int prot);
+static inline u32 gt_ga(const void *p, const char *file, int line)
+{
+    uintptr_t a = (uintptr_t)p;
+    if (__builtin_expect(a >> 32 != 0, 0))
+        gt_ga_high(p, file, line);
+    return (u32)a;
+}
+#define GA(p) gt_ga((const void *)(uintptr_t)(p), __FILE__, __LINE__)
+#else
 #define GA(p) ((u32)(uintptr_t)(p))
+#endif
 static inline u32 rd32(u32 a) { return *(ua32 *)GP(a); }
 static inline void wr32(u32 a, u32 v) { *(ua32 *)GP(a) = v; }
 

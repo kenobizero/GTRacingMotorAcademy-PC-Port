@@ -32,6 +32,9 @@ public class GTRacingActivity extends SDLActivity {
 
     @Override
     protected String[] getLibraries() {
+        // 64-bit: libmain.so is the stub that loads the game (libgame.so, SDL in it) below 4 GB (jni/stub.c)
+        if (android.os.Process.is64Bit())
+            return new String[] {"main"};
         return new String[] {"SDL3", "main"};
     }
 

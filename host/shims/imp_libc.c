@@ -243,7 +243,70 @@ void h_qsort(CPU *c, u32 base, u32 n, u32 size, u32 cmp)
    host's own lines: nothing is formatted, locked or written then (rt_vlog returns at once; printf's count is
    still the formatted length).  The same holds for write() to descriptors 1 and 2 and for NSLog (ns_string.c).
    The game's i386 va_list is a plain pointer to its words, so it can be read twice. */
-static int console(u32 f) { return GP(f) == stdout || GP(f) == stderr; }
+/* The game's FILE values (FILE_HANDLE).  On a 32-bit host the C library's FILE pointer itself.  On a 64-bit one
+   (arm64-v8a) the C library's FILE is in its own memory, above the game's 4 GB: the game is given a small cell in
+   its memory that holds it (and one each for stdin, stdout, stderr). */
+#if defined(__LP64__)
+#define GFILE_MAGIC 0x47464c45u
+typedef struct { u32 magic; FILE *f; } GFile;
+static GFile g_std[3];
+u32 gt_file_handle(FILE *f)
+{
+    if (!f)
+        return 0;
+    for (int i = 0; i < 3; i++) {
+        FILE *sf = i == 0 ? stdin : i == 1 ? stdout : stderr;
+        if (f == sf) {
+            g_std[i].magic = GFILE_MAGIC, g_std[i].f = sf;
+            return GA(&g_std[i]);
+        }
+    }
+    GFile *g = malloc(sizeof *g);
+    if (!g)
+        return 0;
+    g->magic = GFILE_MAGIC, g->f = f;
+    return GA(g);
+}
+FILE *gt_file(u32 h)
+{
+    if (!h)
+        return NULL;
+    GFile *g = GP(h);
+    return g->magic == GFILE_MAGIC ? g->f : NULL;
+}
+static void file_drop(u32 h)
+{
+    GFile *g = GP(h);
+    if (g >= &g_std[0] && g < &g_std[3])
+        return;
+    g->magic = 0;
+    free(g);
+}
+#else
+u32 gt_file_handle(FILE *f) { return GA(f); }
+FILE *gt_file(u32 h) { return GP(h); }
+static void file_drop(u32 h) { (void)h; }
+#endif
+#define GF(f) gt_file(f)
+u32 h_fclose(u32 f)
+{
+    FILE *fp = GF(f);
+    if (!fp)
+        return (u32)-1;
+    u32 r = (u32)fclose(fp);
+    file_drop(f);
+    return r;
+}
+u32 h_fread(u32 p, u32 size, u32 n, u32 f) { return GF(f) ? (u32)fread(GP(p), size, n, GF(f)) : 0; }
+u32 h_ftell(u32 f) { return GF(f) ? (u32)ftell(GF(f)) : (u32)-1; }
+void h_rewind(u32 f) { if (GF(f)) rewind(GF(f)); }
+u32 h_feof(u32 f) { return GF(f) ? (u32)feof(GF(f)) : 1; }
+u32 h_ferror(u32 f) { return GF(f) ? (u32)ferror(GF(f)) : 1; }
+u32 h_fflush(u32 f) { return (u32)fflush(f ? GF(f) : NULL); }
+u32 h_fgets(u32 s, u32 n, u32 f) { return GF(f) && fgets(W(s), (int)n, GF(f)) ? s : 0; }
+u32 h_fileno(u32 f) { return GF(f) ? (u32)_fileno(GF(f)) : (u32)-1; }
+
+static int console(u32 f) { return GF(f) == stdout || GF(f) == stderr; }
 #ifdef _WIN32
 static u32 console_vf(const char *fmt, va_list ap)
 {
@@ -300,21 +363,21 @@ static u32 gconsole(const char *fmt, const u32 *w)
 }
 u32 h_printf(u32 fmt, const u32 *va) { return gconsole(S(fmt), va); }
 u32 h_vprintf(u32 fmt, u32 va) { return gconsole(S(fmt), GP(va)); }
-u32 h_fprintf(u32 f, u32 fmt, const u32 *va) { return console(f) ? gconsole(S(fmt), va) : gfile(GP(f), S(fmt), va); }
+u32 h_fprintf(u32 f, u32 fmt, const u32 *va) { return console(f) ? gconsole(S(fmt), va) : gfile(GF(f), S(fmt), va); }
 u32 h_vfprintf(u32 f, u32 fmt, u32 va)
 {
-    return console(f) ? gconsole(S(fmt), GP(va)) : gfile(GP(f), S(fmt), GP(va));
+    return console(f) ? gconsole(S(fmt), GP(va)) : gfile(GF(f), S(fmt), GP(va));
 }
 #else
 u32 h_printf(u32 fmt, const u32 *va) { return console_vf(S(fmt), VA(va)); }
 u32 h_vprintf(u32 fmt, u32 va) { return console_vf(S(fmt), VA(GP(va))); }
 u32 h_fprintf(u32 f, u32 fmt, const u32 *va)
 {
-    return console(f) ? console_vf(S(fmt), VA(va)) : (u32)vfprintf(GP(f), S(fmt), VA(va));
+    return console(f) ? console_vf(S(fmt), VA(va)) : (u32)vfprintf(GF(f), S(fmt), VA(va));
 }
 u32 h_vfprintf(u32 f, u32 fmt, u32 va)
 {
-    return console(f) ? console_vf(S(fmt), VA(GP(va))) : (u32)vfprintf(GP(f), S(fmt), VA(GP(va)));
+    return console(f) ? console_vf(S(fmt), VA(GP(va))) : (u32)vfprintf(GF(f), S(fmt), VA(GP(va)));
 }
 #endif
 u32 h_puts(u32 s)
@@ -332,14 +395,14 @@ void h_perror(u32 s) { rt_log("%s%s%s\n", s ? S(s) : "", s && *S(s) ? ": " : "",
 u32 h_fwrite(u32 p, u32 size, u32 n, u32 f)
 {
     if (!console(f))
-        return (u32)fwrite(GP(p), size, n, GP(f));
+        return (u32)fwrite(GP(p), size, n, GF(f));
     console_n(GP(p), (size_t)size * n);
     return n;
 }
 u32 h_fputc(u32 ch, u32 f)
 {
     if (!console(f))
-        return (u32)fputc((int)ch, GP(f));
+        return (u32)fputc((int)ch, GF(f));
     char b = (char)ch;
     console_n(&b, 1);
     return ch & 0xff;
@@ -347,7 +410,7 @@ u32 h_fputc(u32 ch, u32 f)
 u32 h_fputs(u32 s, u32 f)
 {
     if (!console(f))
-        return (u32)fputs(S(s), GP(f));
+        return (u32)fputs(S(s), GF(f));
     rt_log("%s", S(s));
     return 1;
 }
@@ -376,7 +439,7 @@ u32 h_vsprintf_chk(u32 buf, u32 flag, u32 cap, u32 fmt, u32 va)
                      GP((w)[7]), GP((w)[8]), GP((w)[9]), GP((w)[10]), GP((w)[11]), GP((w)[12]), GP((w)[13]), \
                      GP((w)[14]), GP((w)[15])
 u32 h_sscanf(u32 s, u32 fmt, const u32 *va) { return (u32)sscanf(S(s), S(fmt), SCAN_ARGS(va)); }
-u32 h_fscanf(u32 f, u32 fmt, const u32 *va) { return (u32)fscanf(GP(f), S(fmt), SCAN_ARGS(va)); }
+u32 h_fscanf(u32 f, u32 fmt, const u32 *va) { return (u32)fscanf(GF(f), S(fmt), SCAN_ARGS(va)); }
 #else
 u32 h_sprintf(u32 buf, u32 fmt, const u32 *va) { return (u32)vsprintf(W(buf), S(fmt), VA(va)); }
 u32 h_snprintf(u32 buf, u32 n, u32 fmt, const u32 *va) { return (u32)vsnprintf(W(buf), n, S(fmt), VA(va)); }
@@ -398,7 +461,7 @@ u32 h_vsprintf_chk(u32 buf, u32 flag, u32 cap, u32 fmt, u32 va)
     return (u32)vsnprintf(W(buf), cap, S(fmt), VA(GP(va)));
 }
 u32 h_sscanf(u32 s, u32 fmt, const u32 *va) { return (u32)vsscanf(S(s), S(fmt), VA(va)); }
-u32 h_fscanf(u32 f, u32 fmt, const u32 *va) { return (u32)vfscanf(GP(f), S(fmt), VA(va)); }
+u32 h_fscanf(u32 f, u32 fmt, const u32 *va) { return (u32)vfscanf(GF(f), S(fmt), VA(va)); }
 #endif
 
 /* Game paths: absolute host paths (NSBundle / NSHomeDirectory give those), '/' or '\'. */
@@ -416,13 +479,13 @@ u32 h_fopen(u32 path, u32 mode)
         gt_set_errno(errno);
     if (rt_trace)
         rt_log("[file] fopen %s %s -> %p\n", p, m, (void *)f);
-    return GA(f);
+    return gt_file_handle(f);
 }
-u32 h_fseek(u32 f, u32 off, u32 whence) { return (u32)fseek(GP(f), (long)(s32)off, (int)whence); }
+u32 h_fseek(u32 f, u32 off, u32 whence) { return (u32)fseek(GF(f), (long)(s32)off, (int)whence); }
 u32 h_setvbuf(u32 f, u32 buf, u32 mode, u32 size)
 {
     int m = mode == 0 ? _IOFBF : mode == 1 ? _IOLBF : _IONBF;
-    return (u32)setvbuf(GP(f), buf ? W(buf) : NULL, m, size ? size : 512);
+    return (u32)setvbuf(GF(f), buf ? W(buf) : NULL, m, size ? size : 512);
 }
 u32 h_remove(u32 path)
 {

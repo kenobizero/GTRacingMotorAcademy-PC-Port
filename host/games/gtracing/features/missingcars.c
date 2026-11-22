@@ -358,7 +358,7 @@ static int write_whole(CPU *c, u32 pl)
         rt_log("[cars] profile saved with the %d car%s left out back in the garage%s (thread %lu)\n", nhidden,
                nhidden == 1 ? "" : "s", hidden_chosen >= 0 && (int)vchosen == chosen_vis ? ", the save's chosen car too"
                                                                                           : "",
-               GetCurrentThreadId());
+               (unsigned long)GetCurrentThreadId());
     return 1;
 }
 

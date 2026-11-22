@@ -27,12 +27,20 @@
 #include <time.h>
 #include <unistd.h>
 
-/* types: as on 32-bit Windows (long is 32 bits on armeabi-v7a, so the host's "%lu" of a DWORD stays right) */
-_Static_assert(sizeof(long) == 4 && sizeof(void *) == 4, "the host is a 32-bit program (armeabi-v7a)");
+/* types: as on Windows, 32 bits whatever the host's long (armeabi-v7a: 32, arm64-v8a: 64).  On a 32-bit host they
+   are long (the host's "%lu" of a DWORD); on a 64-bit one the 32-bit integer types, and the "%lu" sites print
+   through GT_DW() (plat.h) */
+#if defined(__LP64__)
+typedef uint32_t DWORD;
+typedef int32_t LONG;
+typedef uint32_t ULONG;
+#else
+_Static_assert(sizeof(long) == 4 && sizeof(void *) == 4, "a 32-bit host (armeabi-v7a)");
 typedef unsigned long DWORD;
-typedef int BOOL;
 typedef long LONG;
 typedef unsigned long ULONG;
+#endif
+typedef int BOOL;
 typedef unsigned int UINT;
 typedef uint32_t UINT32;
 typedef uint8_t BYTE;

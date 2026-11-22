@@ -194,7 +194,7 @@ typedef struct ThreadRec {
     HANDLE h;
     u32 start, arg, result;
     u32 stack;
-    void *exit_jb[5];
+    void *exit_jb[RT_JB_WORDS];
     int detached;
 } ThreadRec;
 
@@ -216,7 +216,7 @@ static DWORD WINAPI thread_main(void *p)
     ThreadRec *t = p;
     self_rec = t;
     rt_thread_new(t->stack < 256 * 1024 ? 256 * 1024 : t->stack);
-    if (!__builtin_setjmp(t->exit_jb))
+    if (!RT_SETJMP(t->exit_jb))
         t->result = rt_call1(t->start, t->arg);
     rt_thread_end();
     return 0;
@@ -286,7 +286,7 @@ void h_pthread_exit(u32 value)
     if (!t || !t->start)
         rt_fatal("pthread_exit on a thread the game did not create");
     t->result = value;
-    __builtin_longjmp(t->exit_jb, 1);
+    RT_LONGJMP(t->exit_jb);
 }
 
 u32 h_pthread_cancel(u32 th) { rt_log("[thread] pthread_cancel 0x%08x ignored\n", th); return 0; }

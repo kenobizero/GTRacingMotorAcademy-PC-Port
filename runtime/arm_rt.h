@@ -133,11 +133,24 @@ enum { TRAP_UDF = 1, TRAP_FALLOFF, TRAP_NORETURN, TRAP_TABLE, TRAP_RESUME, TRAP_
 #define CALL_IND(t) rt_call_indirect(c, (t))
 #define MEMBAR() __sync_synchronize()
 
+/* The host's jump buffers.  __builtin_setjmp / __builtin_longjmp (5 words, the cheap pair) where the compiler has
+ * them; arm64 has not: the C library's _setjmp / _longjmp there (bionic's jmp_buf, 32 longs; no signal mask). */
+#if defined(__aarch64__)
+#include <setjmp.h>
+#define RT_JB_WORDS 32
+#define RT_SETJMP(b) _setjmp((long *)(void *)(b))
+#define RT_LONGJMP(b) _longjmp((long *)(void *)(b), 1)
+#else
+#define RT_JB_WORDS 5
+#define RT_SETJMP(b) __builtin_setjmp(b)
+#define RT_LONGJMP(b) __builtin_longjmp(b, 1)
+#endif
+
 /* SjLj exception frames: a function with resume labels registers a host
  * jump buffer; the runtime's _Unwind_SjLj_Resume / throw jumps back into it
  * with c->resume_pc set and the guest registers in c. */
 typedef struct RtFrame {
-    void *jb[5];
+    void *jb[RT_JB_WORDS];
     struct RtFrame *prev;
     u32 guest_sp;
     u32 fc;                    /* the guest SjLj function context it registered, or 0 */
@@ -145,7 +158,7 @@ typedef struct RtFrame {
 void rt_frame_push(CPU *c, RtFrame *f);
 void rt_frame_pop(CPU *c, RtFrame *f);
 #define SJLJ_FRAME() RtFrame fr_; rt_frame_push(c, &fr_)
-#define SJLJ_SETJMP() __builtin_setjmp(fr_.jb)
+#define SJLJ_SETJMP() RT_SETJMP(fr_.jb)
 #define SJLJ_POP() rt_frame_pop(c, &fr_)
 
 /* Guest setjmp / sigsetjmp (buffer in r0): returns twice, so the host setjmp is made in the
@@ -154,7 +167,7 @@ void rt_frame_pop(CPU *c, RtFrame *f);
 void **rt_setjmp_prepare(CPU *c, u32 guest_buf, int sig);
 #define GUEST_SETJMP(sig) do {                                   \
         void **jb_ = rt_setjmp_prepare(c, R0, (sig));            \
-        if (__builtin_setjmp(jb_)) { RELOAD_ALL(); }             \
+        if (RT_SETJMP(jb_)) { RELOAD_ALL(); }                   \
         else { R0 = 0; }                                         \
     } while (0)
 

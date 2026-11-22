@@ -48,7 +48,7 @@ static void GT_GLAPI gl_debug_cb(u32 source, u32 type, u32 id, u32 severity, int
         u32 fbo = 0, prog = 0, status = p_glCheckFramebufferStatus(GL_FRAMEBUFFER);
         p_glGetIntegerv(GL_FRAMEBUFFER_BINDING, GA(&fbo));
         p_glGetIntegerv(GL_CURRENT_PROGRAM, GA(&prog));
-        rt_log("[gl debug] %s (thread %lu, frame %u, fbo %u status 0x%x, program %u)\n", msg, GetCurrentThreadId(),
+        rt_log("[gl debug] %s (thread %lu, frame %u, fbo %u status 0x%x, program %u)\n", msg, (unsigned long)GetCurrentThreadId(),
                eagl_frames(), fbo, status, prog);
     }
 }
@@ -78,7 +78,7 @@ static u32 es_buffer_size(u32 target)
 }
 /* glMapBuffer(OES): the whole buffer, its old contents kept unless only written (the game writes the buffer it
    maps; GL_WRITE_ONLY_OES is the only access OES_mapbuffer has) */
-static u32 GT_GLAPI es_map_buffer(u32 target, u32 access)
+static gt_glw GT_GLAPI es_map_buffer(u32 target, u32 access)
 {
     u32 n = es_buffer_size(target);
     if (!n)
@@ -89,7 +89,7 @@ static u32 GT_GLAPI es_map_buffer(u32 target, u32 access)
 }
 static void GT_GLAPI es_get_buffer_sub_data(u32 target, u32 off, u32 n, u32 out)
 {
-    void *p = GP(p_glMapBufferRange(target, off, n, GL_MAP_READ_BIT));
+    void *p = (void *)(uintptr_t)p_glMapBufferRange(target, off, n, GL_MAP_READ_BIT);
     if (p) {
         memcpy(GP(out), p, n);
         p_glUnmapBuffer(target);
@@ -108,8 +108,8 @@ static void GT_GLAPI es_nothing_logged(void)
 static int es_standins(int missing)
 {
     p_glClearDepth = es_clear_depth;
-    p_glMapBuffer = es_map_buffer;
-    p_glGetBufferSubData = es_get_buffer_sub_data;
+    p_glMapBuffer = (T_glMapBuffer)(void *)es_map_buffer;
+    p_glGetBufferSubData = (T_glGetBufferSubData)(void *)es_get_buffer_sub_data;
     int filled = 0;
     /* every entry point still missing: a call that does nothing (the ARM calling convention lets a function of no
        arguments stand for any: the caller cleans up, the result in r0 is not used by these callers) */
@@ -202,7 +202,17 @@ u32 h_glGetString(u32 name)
     case GL_EXTENSIONS:
         return GA(ext);
     }
+#if defined(__LP64__)
+    /* a 64-bit host: the driver's string is above 4 GB, the game gets a copy in its memory */
+    const char *d = (const char *)(uintptr_t)p_glGetString(name);
+    static char other[256];
+    if (!d)
+        return 0;
+    snprintf(other, sizeof other, "%s", d);
+    return GA(other);
+#else
     return p_glGetString(name);
+#endif
 }
 
 void h_glGetIntegerv(u32 pname, u32 out)
@@ -261,8 +271,43 @@ void h_glClearDepthf(float d) { p_glClearDepth(d); }
 void h_glClearDepthf(float d) { p_glClearDepthf(d); }
 #endif
 
+#if defined(__LP64__)
+/* a 64-bit host: the driver's mapping is not in the game's 4 GB, so the game is given a copy of the buffer in its
+   memory (read in unless only written), written to the mapping and unmapped at glUnmapBufferOES */
+static struct { u32 target; u8 *shadow; void *real; u32 n; } maps64[4];
+u32 h_glMapBufferOES(u32 target, u32 access)
+{
+    void *real = (void *)(uintptr_t)p_glMapBuffer(target, access);
+    if (!real)
+        return 0;
+    u32 n = es_buffer_size(target);
+    for (int i = 0; i < 4; i++)
+        if (!maps64[i].shadow || maps64[i].target == target) {
+            free(maps64[i].shadow);
+            u8 *sh = malloc(n ? n : 1);
+            if (!sh)
+                return 0;
+            if (access != GL_WRITE_ONLY_OES)
+                memcpy(sh, real, n);
+            maps64[i].target = target, maps64[i].shadow = sh, maps64[i].real = real, maps64[i].n = n;
+            return GA(sh);
+        }
+    return 0;
+}
+u32 h_glUnmapBufferOES(u32 target)
+{
+    for (int i = 0; i < 4; i++)
+        if (maps64[i].shadow && maps64[i].target == target) {
+            memcpy(maps64[i].real, maps64[i].shadow, maps64[i].n);
+            free(maps64[i].shadow);
+            maps64[i].shadow = NULL;
+        }
+    return p_glUnmapBuffer(target) & 0xff;
+}
+#else
 u32 h_glMapBufferOES(u32 target, u32 access) { return p_glMapBuffer(target, access); }
 u32 h_glUnmapBufferOES(u32 target) { return p_glUnmapBuffer(target) & 0xff; }
+#endif
 
 void h_glCurrentPaletteMatrixOES(u32 m) { (void)m; once("OES_matrix_palette (glCurrentPaletteMatrixOES) is not supported"); }
 void h_glMatrixIndexPointerOES(u32 a, u32 b, u32 c_, u32 d) { (void)a, (void)b, (void)c_, (void)d; once("OES_matrix_palette (glMatrixIndexPointerOES) is not supported"); }
@@ -371,7 +416,7 @@ void gles_context_current(void *gl)
     if (s && vs_ && vs_ != s) {
         static volatile LONG n;
         if (InterlockedIncrement(&n) <= 8)
-            rt_log("[gl] thread %lu moves to another context's vertex state (context %p)\n", GetCurrentThreadId(),
+            rt_log("[gl] thread %lu moves to another context's vertex state (context %p)\n", (unsigned long)GetCurrentThreadId(),
                    gl);
     }
     if (s)
@@ -659,7 +704,7 @@ void h_glDeleteBuffers(u32 n, u32 ids)
             static volatile LONG logged;
             if (InterlockedIncrement(&logged) <= 4)
                 rt_log("[gl] DEFER_DELETE: buffer %u deleted on thread %lu while another context still has it bound: "
-                       "kept until none does (%d kept now)\n", keep[0], GetCurrentThreadId(), dd_n);
+                       "kept until none does (%d kept now)\n", keep[0], (unsigned long)GetCurrentThreadId(), dd_n);
         }
         if (nn) {
             p_glDeleteBuffers(nn, GA(now));
@@ -1071,10 +1116,10 @@ int gles_selftest_index(void)
    GT_GL_STATS=1 counts what it did every 600 frames. */
 #define SV_RING  (4u << 20)
 #define SV_IRING (1u << 20)
-typedef void(GT_GLAPI *T_sv_subdata)(u32 target, u32 off, u32 n, const void *p);
-typedef void(GT_GLAPI *T_sv_basevertex)(u32 mode, u32 count, u32 type, u32 ptr, int base);
-typedef void(GT_GLAPI *T_sv_storage)(u32 target, u32 size, const void *p, u32 flags);
-typedef void *(GT_GLAPI *T_sv_map)(u32 target, u32 off, u32 n, u32 access);
+typedef void(GT_GLAPI *T_sv_subdata)(u32 target, gt_glw off, gt_glw n, const void *p);
+typedef void(GT_GLAPI *T_sv_basevertex)(u32 mode, u32 count, u32 type, gt_glw ptr, int base);
+typedef void(GT_GLAPI *T_sv_storage)(u32 target, gt_glw size, const void *p, u32 flags);
+typedef void *(GT_GLAPI *T_sv_map)(u32 target, gt_glw off, gt_glw n, u32 access);
 typedef void *(GT_GLAPI *T_sv_fence)(u32 cond, u32 flags);
 typedef u32(GT_GLAPI *T_sv_wait)(void *sync, u32 flags, unsigned long long ns);
 typedef void(GT_GLAPI *T_sv_delsync)(void *sync);
@@ -1232,7 +1277,7 @@ static int sv_ready(VState *s)
     memset(s->sv_fence, 0, sizeof s->sv_fence);
     s->sv_map[0] = mp[0], s->sv_map[1] = mp[1], s->sv_seg[0] = s->sv_seg[1] = 0;
     s->sv_ring = b[0], s->sv_iring = b[1], s->sv_off = s->sv_ioff = 0, s->sv_moved = 0, s->sv_ctx = ctx;
-    rt_log("[gl] STREAM_VBO: rings %u / %u for context %p (thread %lu)\n", b[0], b[1], ctx, GetCurrentThreadId());
+    rt_log("[gl] STREAM_VBO: rings %u / %u for context %p (thread %lu)\n", b[0], b[1], ctx, (unsigned long)GetCurrentThreadId());
     return 1;
 }
 
@@ -1456,7 +1501,7 @@ static void unreadable_used(u32 i)
         LONG n = InterlockedIncrement(&used);
         if (n <= 4 || n == 100 || n == 10000)
             rt_log("[gl] left out: attribute %u IS read by program %u (reads 0x%x; %ld such draws so far)\n", i, prog, r,
-                   n);
+                   (long)n);
     } else if (InterlockedIncrement(&unused) <= 4)
         rt_log("[gl] left out: attribute %u is not read by program %u (reads 0x%x)\n", i, prog, r);
 }
@@ -2207,7 +2252,7 @@ void h_glLinkProgram(u32 prog)
         p_glGetProgramInfoLog(prog, sizeof log, GA(&n), GA(log));
         p_glGetProgramiv(prog, GL_ATTACHED_SHADERS, GA(&att));
         rt_log("[gl] program %u did not link (%d shaders attached, thread %lu, context %p):\n%s\n", prog, att,
-               GetCurrentThreadId(), (void *)gt_gl_current(), log);
+               (unsigned long)GetCurrentThreadId(), (void *)gt_gl_current(), log);
     }
 }
 
