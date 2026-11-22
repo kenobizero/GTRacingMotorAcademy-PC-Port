@@ -309,6 +309,41 @@ static void android_dirs(void)
     gt_android_set_exe_dir(exe_dir);
     chdir(exe_dir);
 }
+
+/* The port's menu pages (the patched menu SWFs, host/build.py's patch/): an APK built with the game's menu files
+   (.github/workflows/android.yml) carries them as assets gtpatch/<name>; they are put in the port's folder's
+   patch/ (where ns_misc.c reads them) when missing or different.  An APK without them changes nothing there. */
+static void android_patch_from_apk(void)
+{
+    static const char *const names[] = {"MZlN_MiNH_XiZEKXiiMlHM.FAK", "MZlN_MiNH_XiZELBKXiiMlHM.FAK",
+                                        "MZlN_MiNH_XiZEKXiiMlHM_EdAXiF.FAK", "LHBMiNHFKXiiMlHM.FAK",
+                                        "LHBMiNHFLBKXiiMlHM.FAK", "LHBMiNHFKXiiMlHM_EdAXiF.FAK"};
+    char dir[MAX_PATH + 16];
+    snprintf(dir, sizeof dir, "%s/patch", exe_dir);
+    int put = 0, kept = 0;
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
+        char asset[64];
+        snprintf(asset, sizeof asset, "gtpatch/%s", names[i]);
+        size_t n = 0;
+        void *a = SDL_LoadFile(asset, &n);
+        if (!a)
+            continue;
+        char dst[MAX_PATH + 64];
+        snprintf(dst, sizeof dst, "%s/%s", dir, names[i]);
+        size_t m = 0;
+        void *b = SDL_LoadFile(dst, &m);
+        if (b && m == n && !memcmp(a, b, n))
+            kept++;
+        else {
+            mkdir(dir, 0777);
+            put += SDL_SaveFile(dst, a, n) ? 1 : 0;
+        }
+        SDL_free(a);
+        SDL_free(b);
+    }
+    if (put || kept)
+        rt_log("[main] the menu pages from the APK: %d put in patch/, %d there already\n", put, kept);
+}
 #endif
 
 static int host_main(int argc, char **argv)
@@ -369,6 +404,7 @@ static int host_main(int argc, char **argv)
                  GT_RESERVE_START);
 #else
     gt_fault_install();
+    android_patch_from_apk();
     {
         Dl_info di;
         if (dladdr((void *)host_main, &di) && di.dli_fbase)

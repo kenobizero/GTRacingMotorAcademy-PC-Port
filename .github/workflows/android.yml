@@ -2,7 +2,8 @@
 #
 # It needs the game's program (GTRacingFreemiumHD, the file inside GTRacingFreemiumHD.app, version 1.3.4b), which
 # is never in this repository.  Either of:
-#   - a PRIVATE repository of yours named gtracing-game with that file at its top, and the secret
+#   - a PRIVATE repository of yours named gtracing-game with that file at its top (and, for the port's menu pages,
+#     the game's menu files MZlN_MiNH_*.FAK and LHBMiNHF*.FAK next to it), and the secret
 #     GAME_REPO_TOKEN: a token that can read it (in Termux: gh secret set GAME_REPO_TOKEN --body "$(gh auth token)");
 #   - the secret GAME_EXE_URL: a direct-download link to the file.
 # Only that one file is needed to build; the game's other files stay on your phone.  The APK is left as the
@@ -53,6 +54,13 @@ jobs:
           mkdir -p GTRacingFreemiumHD.app
           if [ "$FROM" = repo ]; then
             mv gtracing-game/GTRacingFreemiumHD GTRacingFreemiumHD.app/GTRacingFreemiumHD
+            # the game's menu files, when the private repository has them: patched into the APK (the menu pages)
+            if ls gtracing-game/*.FAK > /dev/null 2>&1; then
+              cp gtracing-game/*.FAK GTRacingFreemiumHD.app/
+              echo "menu files: $(ls gtracing-game/*.FAK | wc -l)"
+            else
+              echo "::notice::No .FAK menu files in gtracing-game: the APK has no menu pages (Display, Exit, Name)"
+            fi
             rm -rf gtracing-game
           else
             curl -fsSL --retry 3 -o GTRacingFreemiumHD.app/GTRacingFreemiumHD "$GAME_EXE_URL"
@@ -93,6 +101,15 @@ jobs:
       - name: Generated code, bridges, SDL 3
         if: steps.game.outputs.ok == '1'
         run: python -I android/prepare.py
+
+      - name: The menu pages into the APK
+        if: steps.game.outputs.ok == '1'
+        run: |
+          if [ -d build/android/patch ]; then
+            mkdir -p android/app/src/main/assets/gtpatch
+            cp build/android/patch/*.FAK android/app/src/main/assets/gtpatch/
+            ls -la android/app/src/main/assets/gtpatch
+          fi
 
       - name: Build the APK
         if: steps.game.outputs.ok == '1'
