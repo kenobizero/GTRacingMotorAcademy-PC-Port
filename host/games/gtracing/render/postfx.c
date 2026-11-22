@@ -77,12 +77,6 @@ static int gt_postfx_mode(void)
     if (mode_ < 0) {
         const char *e = getenv("GT_POSTFX");
         mode_ = e && *e >= '0' && *e <= '4' && !e[1] ? *e - '0' : POSTFX_DEFAULT;
-#if !GT_GL_DESKTOP
-        if (mode_ >= 2) {               /* Android: the host's own passes are desktop OpenGL; the game's bloom only */
-            rt_log("[postfx] POSTFX=%d needs desktop OpenGL: off on OpenGL ES\n", mode_);
-            mode_ = 0;
-        }
-#endif
         rt_log(mode_ == 0   ? "[postfx] off (POSTFX=0)\n"
                : mode_ == 1 ? "[postfx] the game's own bloom on (POSTFX=1)\n"
                : mode_ == 2 ? "[postfx] the iPad 2010 bloom on (POSTFX=2)\n"
@@ -300,9 +294,28 @@ static const char *const fs_src[NPROG] = {
     "}\n",
 };
 
+#if !GT_GL_DESKTOP
+/* OpenGL ES (Android): the same passes in GLSL ES 1.00: the fragment shaders as they are under an ES header (they
+   use texture2D and gl_FragColor only), the vertex shader with attributes of its own (0: the corner, 1: its
+   texture coordinate) */
+static const char *const vs_es =
+    "#version 100\n"
+    "attribute vec2 p; attribute vec2 tc; varying vec2 v;\n"
+    "void main() { v = tc; gl_Position = vec4(p, 0.0, 1.0); }\n";
+#endif
+
 static u32 compile(u32 kind, const char *src)
 {
     u32 s = p_glCreateShader(kind), ok = 0;
+#if !GT_GL_DESKTOP
+    char es[1024];
+    if (kind == GL_VERTEX_SHADER)
+        src = vs_es;
+    else if (!strncmp(src, "#version 120\n", 13)) {
+        snprintf(es, sizeof es, "#version 100\nprecision mediump float;\n%s", src + 13);
+        src = es;
+    }
+#endif
     const char *srcs[1] = {src};
     p_glShaderSource(s, 1, GA(srcs), 0);
     p_glCompileShader(s);
@@ -331,6 +344,10 @@ static int make_progs(void)
         prog[i] = p_glCreateProgram();
         p_glAttachShader(prog[i], vs);
         p_glAttachShader(prog[i], fs);
+#if !GT_GL_DESKTOP
+        p_glBindAttribLocation(prog[i], 0, GA("p"));
+        p_glBindAttribLocation(prog[i], 1, GA("tc"));
+#endif
         p_glLinkProgram(prog[i]);
         p_glGetProgramiv(prog[i], GL_LINK_STATUS, GA(&ok));
         if (!ok) {
@@ -372,6 +389,7 @@ static void target(Target *t, u32 w, u32 h, int mip)
     t->w = w, t->h = h;
 }
 
+#if GT_GL_DESKTOP
 static void quad(void)
 {
     p_glBegin(GL_QUADS);
@@ -381,6 +399,63 @@ static void quad(void)
     p_glTexCoord2f(0, 1), p_glVertex2f(-1, 1);
     p_glEnd();
 }
+#else
+/* OpenGL ES: a vertex array of the passes' own (the game's attribute arrays are vertex array 0's, untouched); a
+   vertex array belongs to its context, so a new one when the passes run in another */
+static u32 q_vao, q_vbo;
+static void *q_ctx;
+static void quad(void)
+{
+    if (!q_vao || q_ctx != gt_gl_current()) {
+        static const float v[16] = {-1, -1, 0, 0, 1, -1, 1, 0, -1, 1, 0, 1, 1, 1, 1, 1};
+        q_ctx = gt_gl_current();
+        p_glGenVertexArrays(1, GA(&q_vao));
+        p_glGenBuffers(1, GA(&q_vbo));
+        p_glBindVertexArray(q_vao);
+        p_glBindBuffer(GL_ARRAY_BUFFER, q_vbo);
+        p_glBufferData(GL_ARRAY_BUFFER, sizeof v, GA(v), GL_STATIC_DRAW);
+        p_glEnableVertexAttribArray(0);
+        p_glEnableVertexAttribArray(1);
+        p_glVertexAttribPointer(0, 2, GL_FLOAT, 0, 4 * sizeof(float), 0);
+        p_glVertexAttribPointer(1, 2, GL_FLOAT, 0, 4 * sizeof(float), 2 * sizeof(float));
+    } else
+        p_glBindVertexArray(q_vao);
+    p_glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+    p_glBindVertexArray(0);
+}
+
+/* glPushAttrib / glPopAttrib's part the passes change, on ES */
+static struct {
+    u8 cap[5], mask[4], depth_mask;
+    int vp[4], blend[4];
+    u32 abuf;
+} es_saved;
+static const u32 es_caps[5] = {GL_SCISSOR_TEST, GL_DEPTH_TEST, GL_STENCIL_TEST, GL_CULL_FACE, GL_BLEND};
+static void es_push(void)
+{
+    for (int i = 0; i < 5; i++)
+        es_saved.cap[i] = (u8)p_glIsEnabled(es_caps[i]);
+    p_glGetBooleanv(GL_COLOR_WRITEMASK, GA(es_saved.mask));
+    p_glGetBooleanv(GL_DEPTH_WRITEMASK, GA(&es_saved.depth_mask));
+    p_glGetIntegerv(GL_VIEWPORT, GA(es_saved.vp));
+    p_glGetIntegerv(GL_BLEND_SRC_RGB, GA(&es_saved.blend[0]));
+    p_glGetIntegerv(GL_BLEND_DST_RGB, GA(&es_saved.blend[1]));
+    p_glGetIntegerv(GL_BLEND_SRC_ALPHA, GA(&es_saved.blend[2]));
+    p_glGetIntegerv(GL_BLEND_DST_ALPHA, GA(&es_saved.blend[3]));
+    gles_state(GL_ARRAY_BUFFER_BINDING, &es_saved.abuf);
+}
+static void es_pop(void)
+{
+    for (int i = 0; i < 5; i++)
+        (es_saved.cap[i] ? p_glEnable : p_glDisable)(es_caps[i]);
+    p_glColorMask(es_saved.mask[0], es_saved.mask[1], es_saved.mask[2], es_saved.mask[3]);
+    p_glDepthMask(es_saved.depth_mask);
+    p_glViewport((u32)es_saved.vp[0], (u32)es_saved.vp[1], (u32)es_saved.vp[2], (u32)es_saved.vp[3]);
+    p_glBlendFuncSeparate((u32)es_saved.blend[0], (u32)es_saved.blend[1], (u32)es_saved.blend[2],
+                          (u32)es_saved.blend[3]);
+    p_glBindBuffer(GL_ARRAY_BUFFER, es_saved.abuf);
+}
+#endif
 
 /* src into dst, blurred: offsets in src's texels x the radius (as 0x160ae4) */
 static void blur(const Target *src, const Target *dst, float radius)
@@ -583,13 +658,19 @@ static void postfx_draw(const Params *p)
     gles_state(GL_ACTIVE_TEXTURE, &active);
     gles_state(GL_TEXTURE_BINDING_2D, &tex0);       /* unit 0's */
     p_glActiveTexture(GL_TEXTURE0);
+#if GT_GL_DESKTOP
     p_glPushAttrib(GL_ALL_ATTRIB_BITS);
+#else
+    es_push();
+#endif
     p_glDisable(GL_SCISSOR_TEST);
     p_glDisable(GL_DEPTH_TEST);
     p_glDisable(GL_STENCIL_TEST);
     p_glDisable(GL_CULL_FACE);
     p_glDisable(GL_BLEND);
+#if GT_GL_DESKTOP
     p_glDisable(GL_ALPHA_TEST);
+#endif
     p_glColorMask(1, 1, 1, 1);
     p_glDepthMask(0);
 
@@ -654,7 +735,11 @@ static void postfx_draw(const Params *p)
     /* back as it was: the game's framebuffers before the attributes (their draw buffers), then the bindings */
     gles_bind_fb(GL_READ_FRAMEBUFFER, rfbo);
     gles_bind_fb(GL_DRAW_FRAMEBUFFER, dfbo);
+#if GT_GL_DESKTOP
     p_glPopAttrib();
+#else
+    es_pop();
+#endif
     p_glUseProgram(cur_prog);
     p_glBindTexture(GL_TEXTURE_2D, tex0);
     p_glActiveTexture(active);

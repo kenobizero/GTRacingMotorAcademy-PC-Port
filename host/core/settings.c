@@ -145,10 +145,10 @@ static void load_defaults(void)
 #if GT_ANDROID
     /* Android: a phone's screen, its touch screen and a mobile GPU.  The iPad 3's art at the screen's own size and
        shape, the game's own touch controls (Touch Screen On), no MSAA (a resolve blit costs a tiler a whole extra
-       pass) and no PostFX (its passes are drawn with desktop OpenGL) */
+       pass); PostFX as on the PC (Enhanced; its passes are drawn with OpenGL ES there, postfx.c) */
     static const char *const defaults[][2] = {
         {"GT_DEVICE", "ipad3"}, {"GT_RESOLUTION", "monitor"}, {"GT_WIDE", "monitor"},
-        {"GT_FULLSCREEN", "1"}, {"GT_MSAA", "0"}, {"GT_POSTFX", "0"}, {"GT_TOUCH_SCREEN", "1"},
+        {"GT_FULLSCREEN", "1"}, {"GT_MSAA", "0"}, {"GT_TOUCH_SCREEN", "1"},
         {"GT_GPU_PROFILE", "igpu"}, {"GT_CURSOR", "0"},
         {"GT_CLOUD_BOARD_URL", "https://gt-redbull-board.gtracing-pc.workers.dev"},
     };

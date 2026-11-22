@@ -96,7 +96,7 @@ defaults are below), the log `GTRacing/gtracing.log`.
 | `GT_RESOLUTION`, `GT_WIDE` | `monitor` | the screen's own size and shape (a 20:9 phone gets the wide menus and HUD) |
 | `GT_DEVICE` | `ipad3` | the Retina art; `ipad2` uses less memory |
 | `GT_MSAA` | `0` | a resolve pass is expensive on a phone's tiled GPU; `2` or `4` on a fast one |
-| `GT_POSTFX` | `0` | Classic and Enhanced are drawn with desktop OpenGL: only `1` (the game's own bloom) is there on Android |
+| `GT_POSTFX` | `4` (as on the PC) | Enhanced; every mode is there (its passes are drawn with OpenGL ES). `0` or `1` for more frames on a slow phone |
 | `GT_GPU_PROFILE` | `igpu` | the lighter motion blur; `full` for the iPad 2's full one |
 | `GT_TILT_INVERT` | `0` | `1` turns the tilt steering's direction, for a phone whose sensor axes differ |
 
@@ -107,7 +107,6 @@ Display page changes that need a restart close the app; open it again.
 - **Not tested on a phone yet.** The host compiles for `armeabi-v7a` against Android's own headers, and the
   Windows build is unchanged, but the first runs will find things to fix. Reports with `GTRacing/gtracing.log`
   are welcome.
-- PostFX modes 2-4 (Classic, Classic Natural, Enhanced) are not there (desktop OpenGL).
 - No crash dump: the log has the fault's lines (`[FAULT]`), and Android's own tombstone the rest. The log's
   `[main] libmain.so at ...` line turns a host address into a function: `llvm-addr2line` (in the NDK) on the
   unstripped `libmain.so` under `android/app/build/intermediates/cxx/`, with the address minus that base.
