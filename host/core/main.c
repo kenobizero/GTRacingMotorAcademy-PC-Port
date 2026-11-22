@@ -1,11 +1,22 @@
 /* main.c -- the GT Racing host (stage 3): loads the iPad game's image, binds its imports and
    runs the recompiled code from the Mach-O entry point (start -> main -> UIApplicationMain).
 
-   usage: gtracing.exe [--app <path to GTRacingFreemiumHD.app>] [--trace] */
+   usage: gtracing.exe [--app <path to GTRacingFreemiumHD.app>] [--trace]
+
+   Android: SDL's activity calls main (SDL_main) with no arguments.  The game folder and the port's files (home\,
+   gtracing.ini, gtracing.log) are in GTRacing/ on the shared storage when the app may write there (All files
+   access), else in the app's own folder (Android/data/<package>/files). */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
+#if GT_ANDROID
+#include <SDL3/SDL.h>
+#include <SDL3/SDL_main.h>
+#include <dlfcn.h>
+#include <signal.h>
+#include <sys/stat.h>
+#endif
 
 #include "gl.h"
 #include "liveblocks.h"
@@ -19,7 +30,14 @@ static char app_dir[MAX_PATH], exe_dir[MAX_PATH];
 void gt_objc_init(void);           /* objc.c: the runtime and the root classes */
 void gt_objc_image(void);          /* objc.c: classes, categories, selectors of the image */
 void gt_objc_load(void);           /* objc.c: +load methods */
+#ifdef _WIN32
 extern char gt_reserve_start[];    /* gt.ld / reserve.S: the first byte of the game's range */
+#else
+extern char *gt_reserve_start;     /* fault_android.c: mapped as the library loads, NULL if it could not be */
+int gt_reserve_error(void);
+void gt_fault_install(void);
+static char app_dir2[MAX_PATH];    /* Android: the app's own folder, where the game may be too */
+#endif
 
 static int is_dir(const char *p)
 {
@@ -34,7 +52,7 @@ static int is_dir(const char *p)
 static int has_game(const char *dir)
 {
     char p[MAX_PATH * 3];
-    if (snprintf(p, sizeof p, "%s\\" GT_GAME_NAME, dir) >= (int)sizeof p)
+    if (snprintf(p, sizeof p, "%s" GT_SEP_S GT_GAME_NAME, dir) >= (int)sizeof p)
         return 0;
     DWORD a = GetFileAttributesA(p);
     return a != INVALID_FILE_ATTRIBUTES && !(a & FILE_ATTRIBUTE_DIRECTORY);
@@ -48,7 +66,7 @@ static int take_app(const char *path)
         return 0;
     if (has_game(app_dir))
         return 1;
-    snprintf(tmp, sizeof tmp, "%s\\" GT_GAME_NAME ".app", app_dir);
+    snprintf(tmp, sizeof tmp, "%s" GT_SEP_S GT_GAME_NAME ".app", app_dir);
     if (is_dir(tmp) && has_game(tmp)) {
         GetFullPathNameA(tmp, sizeof app_dir, app_dir, NULL);
         return 1;
@@ -62,11 +80,26 @@ static int find_app(int argc, char **argv)
     for (int i = 1; i + 1 < argc; i++)
         if (!strcmp(argv[i], "--app"))
             return take_app(argv[i + 1]);
+#ifdef _WIN32
     static const char *const rel[] = {"", "\\..", "\\..\\..", "\\..\\..\\.."};
+#else
+    static const char *const rel[] = {""};
+#endif
     int empty = 0;
+#if GT_ANDROID
+    if (app_dir2[0]) {                          /* the app's own folder too */
+        char tmp[MAX_PATH * 2];
+        snprintf(tmp, sizeof tmp, "%s/" GT_GAME_NAME ".app", app_dir2);
+        int r = take_app(tmp);
+        if (r > 0)
+            return 1;
+        if (r < 0)
+            empty = 1;
+    }
+#endif
     for (size_t i = 0; i < sizeof rel / sizeof *rel; i++) {
         char tmp[MAX_PATH * 2];
-        snprintf(tmp, sizeof tmp, "%s%s\\" GT_GAME_NAME ".app", exe_dir, rel[i]);
+        snprintf(tmp, sizeof tmp, "%s%s" GT_SEP_S GT_GAME_NAME ".app", exe_dir, rel[i]);
         int r = take_app(tmp);
         if (r > 0)
             return 1;
@@ -76,6 +109,7 @@ static int find_app(int argc, char **argv)
     return empty ? -1 : 0;
 }
 
+#ifdef _WIN32
 /* faults */
 
 /* Reads of guest addresses 0x1000..0x11000 made from a pointer the game computed (a NULL object's
@@ -248,16 +282,48 @@ static LONG CALLBACK on_fault(EXCEPTION_POINTERS *e)
     rt_log("(the host address names the function: build\\host\\gtracing.map)\n");
     gt_crash(4, why);                                   /* crashdump.c: the dump and the box */
 }
+#endif
 
 /* main */
 
-int main(int argc, char **argv)
+#if GT_ANDROID
+/* the port's folder: GTRacing/ on the shared storage if it can be written (the player copies the game there with
+   any file manager), else the app's own folder; that one is always looked in for the game too */
+static void android_dirs(void)
+{
+    const char *own = SDL_GetAndroidExternalStoragePath();
+    if (own)
+        snprintf(app_dir2, sizeof app_dir2, "%s", own);
+    const char *ext = getenv("EXTERNAL_STORAGE");
+    char pub[MAX_PATH];
+    snprintf(pub, sizeof pub, "%s/GTRacing", ext && *ext ? ext : "/storage/emulated/0");
+    mkdir(pub, 0777);
+    if (access(pub, W_OK) == 0)
+        snprintf(exe_dir, sizeof exe_dir, "%s", pub);
+    else if (own)
+        snprintf(exe_dir, sizeof exe_dir, "%s", own);
+    else
+        snprintf(exe_dir, sizeof exe_dir, "%s", SDL_GetAndroidInternalStoragePath());
+    if (!strcmp(exe_dir, app_dir2))
+        app_dir2[0] = 0;
+    gt_android_set_exe_dir(exe_dir);
+    chdir(exe_dir);
+}
+#endif
+
+static int host_main(int argc, char **argv)
 {
     char path[MAX_PATH * 2], err[512] = "";
+#if GT_ANDROID
+    signal(SIGPIPE, SIG_IGN);           /* a socket closed by the peer is an error to the game, as on iOS */
+    android_dirs();
+#else
     GetModuleFileNameA(NULL, exe_dir, sizeof exe_dir);
-    char *s = strrchr(exe_dir, '\\');
+    char *s = strrchr(exe_dir, GT_SEP);
     if (s)
         *s = 0;
+#endif
+#ifdef _WIN32
     /* DISPLAY_MENU's restart (display.c): the run that asked for it ends first (its save, its log) */
     const char *wait_pid = getenv("GT_WAIT_PID");
     if (wait_pid && *wait_pid) {
@@ -268,6 +334,7 @@ int main(int argc, char **argv)
         }
         _putenv_s("GT_WAIT_PID", "");
     }
+#endif
     gt_settings_load(exe_dir);                          /* gtracing.ini and the defaults (settings.c) */
     /* GT_LOG=<file>: the log there (two runs at once for LAN_MULTIPLAYER, a test's scratch log); GT_LOG=0: no log,
        neither the file nor the console (rt_log_open).  From the environment or gtracing.ini. */
@@ -276,7 +343,7 @@ int main(int argc, char **argv)
     if (log_env && *log_env)
         snprintf(path, sizeof path, "%s", log_env);
     else
-        snprintf(path, sizeof path, "%s\\gtracing.log", exe_dir);
+        snprintf(path, sizeof path, "%s" GT_SEP_S "gtracing.log", exe_dir);
     /* CRASH_DUMP (scrub.c): the log names no folder of the player's, from its first line */
     rt_hide_path(exe_dir, "%EXE%");
     if (getenv("GT_HOME") && *getenv("GT_HOME"))
@@ -285,7 +352,7 @@ int main(int argc, char **argv)
     gt_settings_log();                                  /* the file's "[ini]" lines, scrubbed */
     gt_live_init();                                     /* LIVE_BLOCKS (liveblocks.c): GT_LIVE_BLOCKS read now */
     if (log_off)                                        /* the dump keeps its place next to the program */
-        snprintf(path, sizeof path, "%s\\gtracing.log", exe_dir);
+        snprintf(path, sizeof path, "%s" GT_SEP_S "gtracing.log", exe_dir);
     gt_dump_arm(path);                                  /* CRASH_DUMP (crashdump.c): gtracing.dmp by the log */
 #if GT_DEV
     for (int i = 1; i < argc; i++)
@@ -294,19 +361,37 @@ int main(int argc, char **argv)
     if (dev_getenv("GT_TRACE"))
         rt_trace = 1;
 #endif
+#ifdef _WIN32
     AddVectoredExceptionHandler(1, on_fault);
 
     if ((u32)(uintptr_t)gt_reserve_start != GT_RESERVE_START)
         rt_fatal("the exe's reserved range starts at %p, not 0x%x (link with gt.ld)", gt_reserve_start,
                  GT_RESERVE_START);
+#else
+    gt_fault_install();
+    {
+        Dl_info di;
+        if (dladdr((void *)host_main, &di) && di.dli_fbase)
+            rt_log("[main] libmain.so at %p\n", di.dli_fbase);
+    }
+    if ((u32)(uintptr_t)gt_reserve_start != GT_RESERVE_START)
+        rt_fatal("The game's memory range 0x%x..0x%x could not be mapped (%s).  This device's 32-bit processes "
+                 "have something there already.", GT_RESERVE_START, GT_RESERVE_END, strerror(gt_reserve_error()));
+#endif
     int found = find_app(argc, argv);
+#if GT_ANDROID
+    if (found <= 0)
+        rt_fatal("The game was not found.  Copy the files of your own iPad game's " GT_GAME_NAME ".app (version "
+                 "1.3.4b) into the folder %s/" GT_GAME_NAME ".app, so that %s/" GT_GAME_NAME ".app/" GT_GAME_NAME
+                 " is there, then start the app again.", exe_dir, exe_dir);
+#endif
     if (found < 0)
         rt_fatal("The " GT_GAME_NAME ".app folder next to gtracing.exe has no game in it.  Copy the files of "
                  "your own iPad game's " GT_GAME_NAME ".app into it (see the note in that folder).");
     if (!found)
         rt_fatal("no " GT_GAME_NAME ".app next to the program (or give --app <folder>)");
     rt_hide_path(app_dir, "%APP%");
-    snprintf(path, sizeof path, "%s\\" GT_GAME_NAME, app_dir);
+    snprintf(path, sizeof path, "%s" GT_SEP_S GT_GAME_NAME, app_dir);
 
     RtThread *t = rt_thread_new(8u << 20);
     CPU *c = &t->cpu;
@@ -364,3 +449,32 @@ int main(int argc, char **argv)
     rt_log("[main] start returned\n");
     return 0;
 }
+
+#if GT_ANDROID
+/* SDL's activity runs main on a Java thread with a small stack; the recompiled frames are larger than the
+   game's own (Windows gives the main thread 64 MB, build.py --stack), so the host runs on a thread of that size */
+typedef struct { int argc; char **argv; int rc; } MainArgs;
+static void *main_thread(void *p)
+{
+    MainArgs *a = p;
+    a->rc = host_main(a->argc, a->argv);
+    return NULL;
+}
+int main(int argc, char **argv)
+{
+    MainArgs a = {argc, argv, 0};
+    pthread_attr_t at;
+    pthread_t t;
+    pthread_attr_init(&at);
+    pthread_attr_setstacksize(&at, 64u << 20);
+    if (pthread_create(&t, &at, main_thread, &a)) {
+        pthread_attr_destroy(&at);
+        return host_main(argc, argv);
+    }
+    pthread_attr_destroy(&at);
+    pthread_join(t, NULL);
+    return a.rc;
+}
+#else
+int main(int argc, char **argv) { return host_main(argc, argv); }
+#endif

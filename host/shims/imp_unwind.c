@@ -19,6 +19,8 @@
 #include "objc.h"
 #include "rt.h"
 
+#define raise eh_raise                 /* not <signal.h>'s raise (bionic's headers bring it in) */
+
 __attribute__((noreturn)) void rt_resume_context(CPU *c, u32 fc);
 
 #define HDR_SIZE 72

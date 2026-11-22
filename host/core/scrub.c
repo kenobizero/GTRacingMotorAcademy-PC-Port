@@ -15,7 +15,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <wchar.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "rt.h"
 
@@ -34,6 +34,20 @@ static void hide_finish(int slot, const char *tag)
     hide[slot].n = n;
 }
 
+#ifndef _WIN32
+/* Android: paths are UTF-8, one spelling */
+void rt_hide_path(const char *path, const char *tag)
+{
+    int slot = !strcmp(tag, "%HOME%") ? HIDE_HOME : !strcmp(tag, "%APP%") ? HIDE_APP : HIDE_EXE;
+    char full[MAX_PATH * 2];
+    if (!GetFullPathNameA(path, sizeof full, full, NULL))
+        snprintf(full, sizeof full, "%s", path);
+    snprintf(hide[slot].path, sizeof hide[slot].path, "%s", full);
+    hide[slot + 1].path[0] = 0;
+    hide_finish(slot, tag);
+    hide_finish(slot + 1, tag);
+}
+#else
 /* slot: the folder in the ANSI code page; slot + 1: in UTF-8, when that is spelled otherwise */
 static void hide_set_wide(int slot, const wchar_t *w, const char *tag)
 {
@@ -60,6 +74,7 @@ void rt_hide_path(const char *path, const char *tag)
     if (MultiByteToWideChar(CP_ACP, 0, full, -1, w, MAX_PATH * 2))
         hide_set_wide(slot, w, tag);
 }
+#endif
 
 /* The Windows user's name and the PC's name as whole words (privacy): the folders above hide them inside the
    Windows user's
@@ -71,6 +86,7 @@ static int same_char(char a, char b);
 enum { WORD_USER, WORD_PC = 2, NWORD = 4 };
 static struct { char s[256]; size_t n; const char *tag; } word[NWORD];
 
+#ifdef _WIN32
 static void word_set(int slot, const wchar_t *env, const char *tag)
 {
     wchar_t w[128];
@@ -87,6 +103,7 @@ static void word_set(int slot, const wchar_t *env, const char *tag)
         word[slot + k].tag = tag;
     }
 }
+#endif
 
 static int word_char(unsigned char c)
 {
@@ -114,6 +131,9 @@ static size_t scrub_word(char *s, size_t n, const char *w, size_t len, const cha
     return o;
 }
 
+#ifndef _WIN32
+static void profile_init(void) {}     /* Android: no user or PC name in the app's paths */
+#else
 static void profile_init(void)
 {
     static int done;
@@ -127,6 +147,7 @@ static void profile_init(void)
     word_set(WORD_USER, L"USERNAME", "%USER%");
     word_set(WORD_PC, L"COMPUTERNAME", "%PC%");
 }
+#endif
 
 static int same_char(char a, char b)
 {
@@ -250,6 +271,7 @@ size_t rt_scrub(char *s, size_t n)
 }
 
 /* Blanks each copy of s in d, keeping the length.  tail: and what follows it in that string, the rest of a path. */
+#ifdef _WIN32
 static void blank_narrow(unsigned char *d, size_t n, const char *s, size_t len, int tail)
 {
     for (size_t o = 0; o + len <= n; o++) {
@@ -401,3 +423,7 @@ void rt_scrub_bytes(unsigned char *d, size_t n)
         }
     }
 }
+#else
+void rt_scrub_names(unsigned char *d, size_t n) { (void)d, (void)n; }   /* no crash dump on Android */
+void rt_scrub_bytes(unsigned char *d, size_t n) { (void)d, (void)n; }
+#endif

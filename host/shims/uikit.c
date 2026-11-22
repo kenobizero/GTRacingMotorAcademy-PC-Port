@@ -10,7 +10,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "ui.h"
 #include "uikit_input.h"
@@ -22,6 +22,9 @@ static float ui_scale = 1.0f;
 float ui_screen_h = 1024.0f;
 int ui_quit;
 float ui_tilt;
+volatile int ui_app_background;    /* Android: the app is in the background (pcinput.c) */
+int ui_sensor_ok;                  /* Android: ui_sensor_g holds the device's gravity (pcinput.c) */
+double ui_sensor_g[3];
 
 static DWORD main_tid;
 int ui_is_main_thread(void) { return GetCurrentThreadId() == main_tid; }
@@ -1088,6 +1091,11 @@ static void acc_z(CPU *c) { ret_d(c, ((Accel_ *)GP(SELF))->z); }
    race: +y turns the car left, so right = -y) */
 void ui_gravity(double g[3])
 {
+    /* Android: the phone's own accelerometer, unless the keys or a pad steer now */
+    if (ui_sensor_ok && ui_tilt > -0.02f && ui_tilt < 0.02f) {
+        g[0] = ui_sensor_g[0], g[1] = ui_sensor_g[1], g[2] = ui_sensor_g[2];
+        return;
+    }
     double ang = -ui_tilt * 0.6, lean = 0.7;
     g[0] = -cos(ang) * cos(lean);
     g[1] = sin(ang) * cos(lean);
@@ -1127,6 +1135,7 @@ void ui_accel_tick(void)
    the GMV port's (gl_context.c pf_window, found there on the same driver): SDL has no attribute for the swap
    method but copies the format of a window it is given, so a hidden one gets the format.  GT_SWAP_COPY=0 lets
    SDL choose.  (A layered window style also kept full screen composed, but not every time.) */
+#ifdef _WIN32
 static LRESULT CALLBACK pf_wndproc(HWND h, UINT m, WPARAM w, LPARAM l) { return DefWindowProcA(h, m, w, l); }
 
 static HWND pf_window(void)
@@ -1183,13 +1192,60 @@ static HWND pf_window(void)
     ReleaseDC(hwnd, dc);
     return hwnd;
 }
+#endif
+
+/* the primary display's size in pixels (landscape: the longer side is the width); 0 if unknown */
+static int monitor_size(int *w, int *h)
+{
+#ifdef _WIN32
+    DEVMODEA dm = {0};
+    dm.dmSize = sizeof dm;
+    if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmPelsWidth && dm.dmPelsHeight) {
+        *w = (int)dm.dmPelsWidth;
+        *h = (int)dm.dmPelsHeight;
+        return 1;
+    }
+    return 0;
+#else
+    /* Android: SDL's video, started here for good (ui_init runs before the window is made; SDL_Init counts its
+       users, so make_window's own start is the second) */
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+        return 0;
+    const SDL_DisplayMode *dm = SDL_GetDesktopDisplayMode(SDL_GetPrimaryDisplay());
+    int ok = dm && dm->w > 0 && dm->h > 0;
+    if (ok) {
+        *w = dm->w > dm->h ? dm->w : dm->h;
+        *h = dm->w > dm->h ? dm->h : dm->w;
+    }
+    return ok;
+#endif
+}
 
 static void make_window(void)
 {
+#if GT_ANDROID
+    /* the main loop keeps running in the background (the game is told, BACKGROUND_THROTTLE); the Back button is a
+       key (pcinput.c: Esc), not the end of the activity */
+    SDL_SetHint(SDL_HINT_ANDROID_BLOCK_ON_PAUSE, "0");
+    SDL_SetHint(SDL_HINT_ANDROID_TRAP_BACK_BUTTON, "1");
+    SDL_SetHint(SDL_HINT_ORIENTATIONS, "LandscapeLeft LandscapeRight");
+    SDL_SetHint(SDL_HINT_TOUCH_MOUSE_EVENTS, "0");
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD | SDL_INIT_EVENTS | SDL_INIT_SENSOR))
+        rt_fatal("SDL_Init: %s", SDL_GetError());
+    /* OpenGL ES 3.0: the game's ES 2 calls as they are, and what the host's own drawing needs (blits, vertex
+       arrays, mapped ranges) */
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_ES);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3);
+    SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 0);
+    SDL_GL_SetAttribute(SDL_GL_RED_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_GREEN_SIZE, 8);
+    SDL_GL_SetAttribute(SDL_GL_BLUE_SIZE, 8);
+#else
     if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_AUDIO | SDL_INIT_GAMEPAD | SDL_INIT_EVENTS))
         rt_fatal("SDL_Init: %s", SDL_GetError());
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 2);
     SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 1);
+#endif
     SDL_GL_SetAttribute(SDL_GL_DOUBLEBUFFER, 1);
     SDL_GL_SetAttribute(SDL_GL_DEPTH_SIZE, 24);
     SDL_GL_SetAttribute(SDL_GL_STENCIL_SIZE, 8);
@@ -1209,17 +1265,21 @@ static void make_window(void)
     /* FULL_SCREEN (display.c): GT_FULLSCREEN=1, written by Options > Display and Alt+Enter, starts full
        screen (the desktop's mode); w x h stay the window's size for Alt+Enter back */
     const char *fs = getenv("GT_FULLSCREEN");
-    if (fs && *fs == '1') {
+    if (GT_ANDROID || (fs && *fs == '1')) {
         SDL_SetBooleanProperty(props, SDL_PROP_WINDOW_CREATE_FULLSCREEN_BOOLEAN, true);
         rt_log("[ui] full screen (GT_FULLSCREEN=1)\n");
     }
+#ifdef _WIN32
     HWND format_of = pf_window();
     if (format_of)
         SDL_SetPointerProperty(props, SDL_PROP_WINDOW_CREATE_WIN32_PIXEL_FORMAT_HWND_POINTER, format_of);
+#endif
     ui_window = SDL_CreateWindowWithProperties(props);
     SDL_DestroyProperties(props);
+#ifdef _WIN32
     if (format_of)
         DestroyWindow(format_of);
+#endif
     if (!ui_window)
         rt_fatal("SDL_CreateWindow: %s", SDL_GetError());
     ui_make_cursor();
@@ -1289,7 +1349,8 @@ static void bg_poll(id delegate)
     if (!bg_on || !ui_window)
         return;
     SDL_WindowFlags f = SDL_GetWindowFlags(ui_window);
-    int min = (f & SDL_WINDOW_MINIMIZED) != 0, front = (f & SDL_WINDOW_INPUT_FOCUS) != 0;
+    /* Android: the app in the background (pcinput.c, SDL's DID_ENTER_BACKGROUND) is a minimized window */
+    int min = (f & SDL_WINDOW_MINIMIZED) != 0 || ui_app_background, front = (f & SDL_WINDOW_INPUT_FOCUS) != 0;
     int multi = net_sockets_open() || gk_sessions_open();
     int fps = multi ? 0 : min ? bg_fps_minimized : !front ? bg_fps_unfocused : 0;
     static int last_fps = -1, last_multi = -1;
@@ -1314,10 +1375,14 @@ static void bg_poll(id delegate)
         rt_log("[bg] minimized: the game goes to the background as on iOS (frame %u)\n", eagl_frames());
         deliver(delegate, "applicationWillResignActive:", "UIApplicationWillResignActiveNotification");
         deliver(delegate, "applicationDidEnterBackground:", "UIApplicationDidEnterBackgroundNotification");
+#ifdef _WIN32
         timeEndPeriod(1);
+#endif
     } else if (!min && bg_paused) {
         bg_paused = 0;
+#ifdef _WIN32
         timeBeginPeriod(1);
+#endif
         rt_log("[bg] restored: the game comes back to the foreground (frame %u)\n", eagl_frames());
         deliver(delegate, "applicationWillEnterForeground:", "UIApplicationWillEnterForegroundNotification");
         deliver(delegate, "applicationDidBecomeActive:", "UIApplicationDidBecomeActiveNotification");
@@ -1356,7 +1421,9 @@ u32 h_UIApplicationMain(u32 argc, u32 argv, u32 principal, u32 delegate_name)
     /* 1 ms timer ticks, kept (pass 5 looked at dropping it): the main loop's waits below (SDL_WaitEventTimeout) and
        the game's own threads' usleep / Sleep wait in whole milliseconds and would wake on Windows' 15.6 ms tick
        without it, which would break the 60 fps frame pacing.  Given back while minimized (BACKGROUND_THROTTLE). */
+#ifdef _WIN32
     timeBeginPeriod(1);
+#endif
     make_window();
     steer_init();
     u32 pc = principal ? objc_getClass_addr(ns_utf8(principal)) : 0;
@@ -1508,10 +1575,9 @@ void ui_init(void)
     const char *wide = getenv("GT_WIDE");
     int wide_w = rt_parse_int(wide, 0, 0, 100000);
     if (wide && !_stricmp(wide, "monitor")) {
-        DEVMODEA dm = {0};
-        dm.dmSize = sizeof dm;
-        if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmPelsHeight)
-            wide_w = (int)(768.0 * dm.dmPelsWidth / dm.dmPelsHeight + 0.5);
+        int mw, mh;
+        if (monitor_size(&mw, &mh))
+            wide_w = (int)(768.0 * mw / mh + 0.5);
         rt_log("[ui] GT_WIDE=monitor: %d x 768\n", wide_w);
     }
     if (wide_w > 1024 && wide_w <= 2048) {
@@ -1536,10 +1602,9 @@ void ui_init(void)
     if (res && *res && strcmp(res, "0")) {
         float s = 0;
         if (!_stricmp(res, "monitor")) {
-            DEVMODEA dm = {0};
-            dm.dmSize = sizeof dm;
-            if (EnumDisplaySettingsA(NULL, ENUM_CURRENT_SETTINGS, &dm) && dm.dmPelsWidth && dm.dmPelsHeight)
-                s = fminf(dm.dmPelsWidth / UI_SCREEN_H, dm.dmPelsHeight / UI_SCREEN_W);
+            int mw, mh;
+            if (monitor_size(&mw, &mh))
+                s = fminf(mw / UI_SCREEN_H, mh / UI_SCREEN_W);
         } else if (rt_parse_int(res, 0, 0, 100000) > 0)
             s = rt_parse_int(res, 0, 0, 100000) / UI_SCREEN_W;
         if (s >= 0.5f && s <= 4.0f) {

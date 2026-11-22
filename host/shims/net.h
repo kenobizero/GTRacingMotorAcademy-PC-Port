@@ -19,7 +19,7 @@ int net_sockets_open(void);               /* the game has sockets open (BACKGROU
 int gk_sessions_open(void);               /* gk.c: a GKSession is up */
 void gt_net_init(void);
 void gt_gk_init(void);
-#ifdef _WINSOCKAPI_
+#if defined(_WINSOCKAPI_) || defined(GT_PLAT_NET_H)
 int net_broadcast(SOCKET h, const void *p, int n, u16 port_be);   /* every subnet + GT_LAN_PEERS */
 #endif
 

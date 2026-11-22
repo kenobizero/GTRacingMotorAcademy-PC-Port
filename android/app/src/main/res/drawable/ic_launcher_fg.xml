@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- an original mark: a chequered flag over a road's curve (no art of the game is in this repository) -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp" android:height="108dp" android:viewportWidth="108" android:viewportHeight="108">
+    <path android:fillColor="#FFFFFF" android:pathData="M30,74 C44,58 64,58 78,40 L82,44 C68,64 48,64 34,78 Z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M36,30h8v8h-8zM52,30h8v8h-8zM44,38h8v8h-8zM60,38h8v8h-8zM36,46h8v8h-8zM52,46h8v8h-8z"/>
+    <path android:fillColor="#FFFFFF" android:pathData="M34,28h2v34h-2z"/>
+</vector>

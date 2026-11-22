@@ -20,9 +20,11 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
+#ifdef _WIN32
 #include <dxgi.h>
 #include <d3d11.h>
+#endif
 
 #include "gl.h"
 #include "rt.h"
@@ -32,6 +34,16 @@
 static int integrated = -1;
 static SRWLOCK lock = SRWLOCK_INIT;
 
+#ifndef _WIN32
+/* Android: every phone GPU shares the CPU's memory: the built-in profile (GT_GPU_PROFILE=full: the full blur) */
+static void detect(void)
+{
+    const char *e = getenv("GT_GPU_PROFILE"), *r = gles_gpu_renderer();
+    integrated = !(e && !_stricmp(e, "full"));
+    rt_log("[gpu] %s: %s profile; settings on auto: %s motion blur\n", r && *r ? r : "(no GL yet)",
+           integrated ? "mobile (built-in)" : "full (GT_GPU_PROFILE=full)", integrated ? "the iPad 3's lighter" : "the full");
+}
+#else
 static unsigned vendor_id(const char *v)
 {
     if (strstr(v, "NVIDIA"))
@@ -162,6 +174,7 @@ static void detect(void)
         }
     }
 }
+#endif
 
 static HANDLE worker;
 static DWORD WINAPI worker_main(void *p)

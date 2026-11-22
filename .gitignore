@@ -30,3 +30,11 @@ home*/
 # The leaderboard server's local state (holds the Cloudflare account id)
 cloud/redbull-board/.wrangler/
 cloud/redbull-board/node_modules/
+
+# The Android build (android/): SDL's sources (android/prepare.py clones them) and Gradle's output
+android/SDL/
+android/.gradle/
+android/build/
+android/app/build/
+android/app/.cxx/
+android/local.properties

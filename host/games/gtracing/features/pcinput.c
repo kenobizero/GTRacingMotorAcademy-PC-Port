@@ -13,7 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "features.h"
 #include "game_hooks.h"
@@ -324,7 +324,15 @@ static void events(void)
         switch (e.type) {
         case SDL_EVENT_QUIT:
         case SDL_EVENT_WINDOW_CLOSE_REQUESTED:
+        case SDL_EVENT_TERMINATING:
             ui_quit = 1;
+            break;
+        /* Android: the app leaves the screen and comes back (BACKGROUND_THROTTLE pauses the game as iOS does) */
+        case SDL_EVENT_DID_ENTER_BACKGROUND:
+            ui_app_background = 1;
+            break;
+        case SDL_EVENT_WILL_ENTER_FOREGROUND:
+            ui_app_background = 0;
             break;
         case SDL_EVENT_MOUSE_BUTTON_DOWN:
             if (e.button.which == SDL_TOUCH_MOUSEID)
@@ -370,6 +378,8 @@ static void events(void)
         }
         case SDL_EVENT_KEY_DOWN:
         case SDL_EVENT_KEY_UP:
+            if (e.key.key == SDLK_AC_BACK)  /* Android's Back: Esc (the pause menu, back in the menus) */
+                e.key.key = SDLK_ESCAPE;
             key_event(&e);
             break;
         case SDL_EVENT_GAMEPAD_ADDED:
@@ -718,6 +728,39 @@ static void gears_and_camera(int pad_busy)
     }
 }
 
+/* Android: the accelerometer as the iPad's (in g, the device's own axes; SDL gives m/s^2 with the opposite sign).
+   The game is drawn in landscape: held the other way round (SDL_ORIENTATION_LANDSCAPE_FLIPPED) x and y turn
+   with it, so either way up the game sees the iPad held as it expects.  GT_TILT_INVERT=1 turns the steering's
+   sign if a device's sensor axes differ. */
+static void sensor_frame(void)
+{
+#if GT_ANDROID
+    static SDL_Sensor *acc;
+    static int tried, invert;
+    if (!tried) {
+        tried = 1;
+        invert = rt_setting_int("GT_TILT_INVERT", 0, 0, 1);
+        int n = 0;
+        SDL_SensorID *ids = SDL_GetSensors(&n);
+        for (int i = 0; ids && i < n && !acc; i++)
+            if (SDL_GetSensorTypeForID(ids[i]) == SDL_SENSOR_ACCEL)
+                acc = SDL_OpenSensor(ids[i]);
+        SDL_free(ids);
+        rt_log("[input] accelerometer: %s\n", acc ? SDL_GetSensorName(acc) : "none");
+    }
+    float v[3];
+    if (!acc || !SDL_GetSensorData(acc, v, 3)) {
+        ui_sensor_ok = 0;
+        return;
+    }
+    double g[3] = {-v[0] / SDL_STANDARD_GRAVITY, -v[1] / SDL_STANDARD_GRAVITY, -v[2] / SDL_STANDARD_GRAVITY};
+    if ((SDL_GetCurrentDisplayOrientation(SDL_GetPrimaryDisplay()) == SDL_ORIENTATION_LANDSCAPE_FLIPPED) != !!invert)
+        g[0] = -g[0], g[1] = -g[1];
+    memcpy(ui_sensor_g, g, sizeof g);
+    ui_sensor_ok = 1;
+#endif
+}
+
 void ui_pump(void)
 {
     display_fullscreen_pump();          /* FULL_SCREEN: the Display page's row */
@@ -741,6 +784,7 @@ void ui_pump(void)
     start_tap(pad_busy);
     gears_and_camera(pad_busy);
     ui_tilt += (want - ui_tilt) * 0.2f;
+    sensor_frame();
     ui_accel_tick();
     steer_frame();
 }

@@ -7,11 +7,15 @@
    - PVRTC textures (glCompressedTexImage2D) are unpacked here to RGBA8;
    - a few ES-only glGet values and texture/renderbuffer formats are answered or mapped. */
 #include <ctype.h>
+#if defined(__SSE2__)
 #include <emmintrin.h>
+#elif defined(__ARM_NEON)
+#include <arm_neon.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <windows.h>
+#include "plat.h"
 
 #include "gl.h"
 #include "game_hooks.h"
@@ -63,6 +67,64 @@ static void gl_debug_on(void)
     rt_log("[gl] debug output on\n");
 }
 
+#if !GT_GL_DESKTOP
+/* OpenGL ES 3 (Android): the desktop calls of gl_list.h the host makes, on ES 3 */
+static void GT_GLAPI es_clear_depth(double d) { p_glClearDepthf((float)d); }
+static u32 es_buffer_size(u32 target)
+{
+    int n = 0;
+    p_glGetBufferParameteriv(target, GL_BUFFER_SIZE, GA(&n));
+    return n > 0 ? (u32)n : 0;
+}
+/* glMapBuffer(OES): the whole buffer, its old contents kept unless only written (the game writes the buffer it
+   maps; GL_WRITE_ONLY_OES is the only access OES_mapbuffer has) */
+static u32 GT_GLAPI es_map_buffer(u32 target, u32 access)
+{
+    u32 n = es_buffer_size(target);
+    if (!n)
+        return 0;
+    u32 bits = access == GL_READ_ONLY ? GL_MAP_READ_BIT :
+               access == GL_READ_WRITE ? GL_MAP_READ_BIT | GL_MAP_WRITE_BIT : GL_MAP_WRITE_BIT;
+    return p_glMapBufferRange(target, 0, n, bits);
+}
+static void GT_GLAPI es_get_buffer_sub_data(u32 target, u32 off, u32 n, u32 out)
+{
+    void *p = GP(p_glMapBufferRange(target, off, n, GL_MAP_READ_BIT));
+    if (p) {
+        memcpy(GP(out), p, n);
+        p_glUnmapBuffer(target);
+    } else
+        memset(GP(out), 0, n);
+}
+/* ES 1.1's fixed-function calls (the game makes an OpenGL ES 2 context; they are imported, not drawn with) and
+   the desktop state calls present() and PostFX used: nothing */
+static void GT_GLAPI es_nothing(void) {}
+static u32 nothing_calls;
+static void GT_GLAPI es_nothing_logged(void)
+{
+    if (nothing_calls++ < 5)
+        rt_log("[gl] an OpenGL ES 1.1 / desktop call this OpenGL ES 3 does not have was skipped\n");
+}
+static int es_standins(int missing)
+{
+    p_glClearDepth = es_clear_depth;
+    p_glMapBuffer = es_map_buffer;
+    p_glGetBufferSubData = es_get_buffer_sub_data;
+    int filled = 0;
+    /* every entry point still missing: a call that does nothing (the ARM calling convention lets a function of no
+       arguments stand for any: the caller cleans up, the result in r0 is not used by these callers) */
+#define FILL(name) if (!p_##name) { p_##name = (T_##name)(void *)es_nothing_logged; filled++; }
+#define GLP(name, params, args) FILL(name)
+#define GLR(ret, name, params, args) FILL(name)
+#define GLX(ret, name, params) FILL(name)
+#include "gl_list.h"
+#undef FILL
+    (void)es_nothing;
+    rt_log("[gl] OpenGL ES: %d entry points of the desktop list have no ES counterpart (stand-ins)\n", filled);
+    return missing - filled;
+}
+#endif
+
 void gles_load(void)
 {
     if (loaded)
@@ -79,6 +141,9 @@ void gles_load(void)
 #define GLX(ret, name, params) LOAD(name)
 #include "gl_list.h"
 #undef LOAD
+#if !GT_GL_DESKTOP
+    missing = es_standins(missing);
+#endif
     loaded = 1;
     rt_log("[gl] %s / %s / OpenGL %s%s\n", (const char *)p_glGetString(GL_VENDOR),
            (const char *)p_glGetString(GL_RENDERER), (const char *)p_glGetString(GL_VERSION),
@@ -144,6 +209,7 @@ void h_glGetIntegerv(u32 pname, u32 out)
 {
     int *v = GP(out);
     switch (pname) {
+#if GT_GL_DESKTOP
     case GL_MAX_VERTEX_UNIFORM_VECTORS:
         p_glGetIntegerv(GL_MAX_VERTEX_UNIFORM_COMPONENTS, out);
         *v /= 4;
@@ -156,6 +222,7 @@ void h_glGetIntegerv(u32 pname, u32 out)
         p_glGetIntegerv(GL_MAX_VARYING_FLOATS, out);
         *v /= 4;
         return;
+#endif
     case GL_IMPLEMENTATION_COLOR_READ_TYPE:
         *v = GL_UNSIGNED_BYTE;
         return;
@@ -188,7 +255,11 @@ void h_glGetIntegerv(u32 pname, u32 out)
     p_glGetIntegerv(pname, out);
 }
 
+#if GT_GL_DESKTOP
 void h_glClearDepthf(float d) { p_glClearDepth(d); }
+#else
+void h_glClearDepthf(float d) { p_glClearDepthf(d); }
+#endif
 
 u32 h_glMapBufferOES(u32 target, u32 access) { return p_glMapBuffer(target, access); }
 u32 h_glUnmapBufferOES(u32 target) { return p_glUnmapBuffer(target) & 0xff; }
@@ -317,7 +388,7 @@ void gles_context_destroyed(void *gl)
 static VState *vs(void)
 {
     if (!vs_)
-        gles_context_current(SDL_GL_GetCurrentContext());
+        gles_context_current(gt_gl_current());
     if (!vs_)
         vs_ = vstate_new();
     return vs_;
@@ -358,11 +429,16 @@ static u32 img_lo, img_hi;
 static unsigned rd_query, rd_image, rd_stack, rd_live;
 static void image_range(void)
 {
+#ifndef _WIN32
+    img_lo = GT_RESERVE_START;           /* Android: the game's range, mapped once by main (never unmapped) */
+    img_hi = GT_MACHO_END;
+#else
     const u8 *base = (const u8 *)GetModuleHandleA(NULL);
     const IMAGE_DOS_HEADER *dos = (const IMAGE_DOS_HEADER *)base;
     const IMAGE_NT_HEADERS *nt = (const IMAGE_NT_HEADERS *)(base + dos->e_lfanew);
     img_lo = (u32)(uintptr_t)base;
     img_hi = img_lo + nt->OptionalHeader.SizeOfImage;
+#endif
 }
 static int stable(u32 a, u32 n)
 {
@@ -526,7 +602,7 @@ static void dd_sweep_locked(void)
 /* at each present (gles_state_forget) */
 static void dd_sweep(void)
 {
-    if (!dd_n || !SDL_GL_GetCurrentContext())
+    if (!dd_n || !gt_gl_current())
         return;
     AcquireSRWLockExclusive(&del_lock);
     dd_sweep_locked();
@@ -777,6 +853,7 @@ static void fixed_plain(float *d, const u8 *src, u32 n, u32 size, u32 stride)
         for (u32 k = 0; k < size; k++)
             d[k] = ((const int *)src)[k] * (1.0f / 65536.0f);
 }
+#if defined(__SSE2__)
 static void fixed_sse2(float *d, const u8 *src, u32 n, u32 size, u32 stride)
 {
     const __m128 k = _mm_set1_ps(1.0f / 65536.0f);
@@ -802,6 +879,26 @@ static void fixed_sse2(float *d, const u8 *src, u32 n, u32 size, u32 stride)
     }
     fixed_plain(d, src, n, size, stride);
 }
+#elif defined(__ARM_NEON)
+/* Android (armeabi-v7a, NEON): vcvt's 16 fraction bits are the same single rounding as int -> float * 2^-16 */
+static void fixed_sse2(float *d, const u8 *src, u32 n, u32 size, u32 stride)
+{
+    u32 v = 0;
+    switch (size) {
+    case 4:
+        for (; v < n; v++, src += stride, d += 4)
+            vst1q_f32(d, vcvtq_n_f32_s32(vld1q_s32((const int32_t *)(const void *)src), 16));
+        return;
+    case 2:
+        for (; v < n; v++, src += stride, d += 2)
+            vst1_f32(d, vcvt_n_f32_s32(vld1_s32((const int32_t *)(const void *)src), 16));
+        return;
+    }
+    fixed_plain(d, src, n, size, stride);
+}
+#else
+static void fixed_sse2(float *d, const u8 *src, u32 n, u32 size, u32 stride) { fixed_plain(d, src, n, size, stride); }
+#endif
 static void fixed_convert(float *d, const u8 *src, u32 n, u32 size, u32 stride)
 {
     fx_verts += n;
@@ -824,6 +921,7 @@ static void index_plain(const u8 *p, u32 count, u32 n, u32 *mn_, u32 *mx_)
     }
     *mn_ = mn, *mx_ = mx;
 }
+#if defined(__SSE2__)
 static void index_sse2(const u8 *p, u32 count, u32 n, u32 *mn_, u32 *mx_)
 {
     u32 mn = 0xffffffff, mx = 0, i = 0;
@@ -865,6 +963,50 @@ static void index_sse2(const u8 *p, u32 count, u32 n, u32 *mn_, u32 *mx_)
     index_plain(p + i * n, count - i, n, &tmn, &tmx);
     *mn_ = tmn < mn ? tmn : mn, *mx_ = tmx > mx ? tmx : mx;
 }
+#elif defined(__ARM_NEON)
+static void index_sse2(const u8 *p, u32 count, u32 n, u32 *mn_, u32 *mx_)
+{
+    u32 mn = 0xffffffff, mx = 0, i = 0;
+    if (n == 2 && count >= 16) {
+        uint16x8_t lo = vdupq_n_u16(0xffff), hi = vdupq_n_u16(0);
+        for (; i + 8 <= count; i += 8) {
+            uint16x8_t x = vld1q_u16((const uint16_t *)(const void *)(p + i * 2));
+            lo = vminq_u16(lo, x);
+            hi = vmaxq_u16(hi, x);
+        }
+        uint16_t a[8], b[8];
+        vst1q_u16(a, lo);
+        vst1q_u16(b, hi);
+        for (int k = 0; k < 8; k++) {
+            if (a[k] < mn)
+                mn = a[k];
+            if (b[k] > mx)
+                mx = b[k];
+        }
+    } else if (n == 1 && count >= 32) {
+        uint8x16_t lo = vdupq_n_u8(0xff), hi = vdupq_n_u8(0);
+        for (; i + 16 <= count; i += 16) {
+            uint8x16_t x = vld1q_u8(p + i);
+            lo = vminq_u8(lo, x);
+            hi = vmaxq_u8(hi, x);
+        }
+        u8 a[16], b[16];
+        vst1q_u8(a, lo);
+        vst1q_u8(b, hi);
+        for (int k = 0; k < 16; k++) {
+            if (a[k] < mn)
+                mn = a[k];
+            if (b[k] > mx)
+                mx = b[k];
+        }
+    }
+    u32 tmn, tmx;
+    index_plain(p + i * n, count - i, n, &tmn, &tmx);
+    *mn_ = tmn < mn ? tmn : mn, *mx_ = tmx > mx ? tmx : mx;
+}
+#else
+static void index_sse2(const u8 *p, u32 count, u32 n, u32 *mn_, u32 *mx_) { index_plain(p, count, n, mn_, mx_); }
+#endif
 
 /* --selftest (selftest.c): FIXED_FAST and INDEX_FAST against the plain loops, on random values (the ends of the
    ranges among them), every size, stride and length kind; the number of differences */
@@ -1052,7 +1194,7 @@ static int sv_enabled(void)
 /* this context's rings, made on first use (and again if the thread's context is not the one they were made in) */
 static int sv_ready(VState *s)
 {
-    void *ctx = SDL_GL_GetCurrentContext();
+    void *ctx = gt_gl_current();
     if (s->sv_ring && s->sv_ctx == ctx)
         return 1;
     if (!ctx)
@@ -1904,8 +2046,64 @@ int gles_add_shader_patch(char *(*patch)(const char *src))
 
 /* GLSL ES 1.00 -> GLSL 1.20: no #version / #extension lines of ES, no precision statements, and the
    precision words defined away */
+#if !GT_GL_DESKTOP
+/* OpenGL ES (Android): the game's GLSL ES as it is, but for what the host's shader patches put in front of it
+   (gles_add_shader_patch: "uniform float gt_...;" on the first line, for desktop GLSL): a #version line goes back
+   to the top, and the host's uniforms get a precision of their own (a fragment shader has no default one for
+   float before its own precision statement) */
+static char *translate_shader_es(const char *src)
+{
+    size_t n = strlen(src);
+    char *out = malloc(n * 2 + 64), *o = out;
+    if (!out)
+        return NULL;
+    const char *ver = NULL, *ver_end = NULL;
+    for (const char *p = src; *p;) {
+        const char *q = p;
+        while (*q == ' ' || *q == '\t')
+            q++;
+        if (!strncmp(q, "#version", 8)) {
+            ver = p;
+            ver_end = strchr(p, '\n');
+            ver_end = ver_end ? ver_end + 1 : p + strlen(p);
+            break;
+        }
+        p = strchr(p, '\n');
+        if (!p)
+            break;
+        p++;
+    }
+    if (ver) {
+        memcpy(o, ver, (size_t)(ver_end - ver));
+        o += ver_end - ver;
+        if (o[-1] != '\n')
+            *o++ = '\n';
+    }
+    static const char host_uni[] = "uniform float gt_";
+    for (const char *p = src; *p;) {
+        if (p == ver) {
+            p = ver_end;
+            continue;
+        }
+        if (!strncmp(p, host_uni, sizeof host_uni - 1)) {
+            static const char now[] = "uniform mediump float gt_";
+            memcpy(o, now, sizeof now - 1);
+            o += sizeof now - 1;
+            p += sizeof host_uni - 1;
+            continue;
+        }
+        *o++ = *p++;
+    }
+    *o = 0;
+    return out;
+}
+#endif
+
 static char *translate_shader(const char *src)
 {
+#if !GT_GL_DESKTOP
+    return translate_shader_es(src);
+#endif
     static const char head[] = "#version 120\n#define lowp\n#define mediump\n#define highp\n";
     size_t n = strlen(src);
     char *out = malloc(n + sizeof head + 1), *o = out;
@@ -1999,7 +2197,7 @@ void h_glLinkProgram(u32 prog)
         p_glGetProgramInfoLog(prog, sizeof log, GA(&n), GA(log));
         p_glGetProgramiv(prog, GL_ATTACHED_SHADERS, GA(&att));
         rt_log("[gl] program %u did not link (%d shaders attached, thread %lu, context %p):\n%s\n", prog, att,
-               GetCurrentThreadId(), (void *)SDL_GL_GetCurrentContext(), log);
+               GetCurrentThreadId(), (void *)gt_gl_current(), log);
     }
 }
 

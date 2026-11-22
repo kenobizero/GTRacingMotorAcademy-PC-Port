@@ -154,6 +154,17 @@ GLX(void, glTexParameteri, (u32 a, u32 b, u32 c_))
 GLX(void, glRenderbufferStorageMultisample, (u32 a, u32 b, u32 c_, u32 d, u32 e))
 GLX(u32, glIsTexture, (u32 a))
 
+#if !GT_GL_DESKTOP
+/* OpenGL ES 3 (Android): what the stand-ins for the desktop calls above use (gles.c), and present's quad (eagl.c) */
+GLX(void, glClearDepthf, (float a))
+GLX(u32, glMapBufferRange, (u32 a, u32 b, u32 c_, u32 d))
+GLX(void, glGetBufferParameteriv, (u32 a, u32 b, u32 c_))
+GLX(void, glGenVertexArrays, (u32 a, u32 b))
+GLX(void, glBindVertexArray, (u32 a))
+GLX(u32, glIsEnabled, (u32 a))
+GLX(void, glGetBooleanv, (u32 a, u32 b))
+#endif
+
 #undef GLP
 #undef GLR
 #undef GLX
