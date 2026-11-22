@@ -153,6 +153,9 @@ static void load_defaults(void)
         /* the frame cap paces the frames (GT_FPS); Android's compositor never tears, and vsync's wait for the
            next refresh turned a frame a little late into a frame twice as long */
         {"GT_VSYNC", "0"}, {"GT_BIG_CORES", "1"},
+        /* the two nearest mipmap levels blended (no seams where a texture changes level; Options > Display >
+           Textures) */
+        {"GT_MIPMAP", "trilinear"},
         {"GT_CLOUD_BOARD_URL", "https://gt-redbull-board.gtracing-pc.workers.dev"},
     };
 #else

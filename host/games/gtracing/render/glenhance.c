@@ -264,10 +264,56 @@ static void set_aniso(u32 target)
 
 static int mip_filter(u32 v) { return v >= GL_NEAREST_MIPMAP_NEAREST && v <= GL_LINEAR_MIPMAP_LINEAR; }
 
+/* MIPMAP (GT_MIPMAP; Options > Display > Textures): how a mipmapped texture is read between its levels.
+   game: as the game asks (most of its textures: GL_LINEAR_MIPMAP_NEAREST, one level at a time, the seams where
+   a road's texture changes level are seen); bilinear: GL_LINEAR_MIPMAP_NEAREST on every one; trilinear:
+   GL_LINEAR_MIPMAP_LINEAR on every one (the two nearest levels blended: no seams).  Only the textures the game
+   gives a mipmap filter itself are changed; the game's own filter is kept for each, so "game" puts it back. */
+static int mip_mode = -1;               /* 0 game, 1 bilinear, 2 trilinear */
+static int pending_mip = -1;
+static u8 mip_game[65536];              /* a texture's own mipmap filter: 1 + (filter - NEAREST_MIPMAP_NEAREST), 0 none */
+
+static int want_mip(void)
+{
+    if (mip_mode < 0) {
+        const char *e = getenv("GT_MIPMAP");
+        mip_mode = e && !_stricmp(e, "trilinear") ? 2 : e && !_stricmp(e, "bilinear") ? 1 : 0;
+        rt_log("[mipmap] %s\n", mip_mode == 2 ? "trilinear on every mipmapped texture (GT_MIPMAP)"
+                                : mip_mode == 1 ? "bilinear on every mipmapped texture (GT_MIPMAP)" : "the game's own");
+    }
+    return mip_mode;
+}
+
+static u32 mip_value(int mode, u32 game)
+{
+    return mode == 2 ? GL_LINEAR_MIPMAP_LINEAR : mode == 1 ? GL_LINEAR_MIPMAP_NEAREST : game;
+}
+
+/* the game sets a mipmap filter on the bound texture: kept as its own, the one the mode asks given */
+static u32 mip_set(u32 target, u32 v)
+{
+    if (target != GL_TEXTURE_2D)
+        return v;
+    u32 t = 0;
+    p_glGetIntegerv(TEX_BINDING_2D, GA(&t));
+    if (t && t < 65536)
+        mip_game[t] = (u8)(1 + (v - GL_NEAREST_MIPMAP_NEAREST));
+    return mip_value(want_mip(), v);
+}
+
 void h_glTexParameteri(u32 target, u32 pname, u32 v)
 {
+    int mip = pname == GL_TEXTURE_MIN_FILTER && mip_filter(v);
+    if (mip)
+        v = mip_set(target, v);
+    else if (pname == GL_TEXTURE_MIN_FILTER && target == GL_TEXTURE_2D) {
+        u32 t = 0;                       /* no longer a mipmapped one */
+        p_glGetIntegerv(TEX_BINDING_2D, GA(&t));
+        if (t && t < 65536)
+            mip_game[t] = 0;
+    }
     p_glTexParameteri(target, pname, v);
-    if (pname == GL_TEXTURE_MIN_FILTER && mip_filter(v))
+    if (mip)
         set_aniso(target);
 }
 
@@ -280,9 +326,12 @@ void h_glTexParameterf(u32 target, u32 pname, float v)
         if (target == GL_TEXTURE_2D)
             seen();
     }
-    p_glTexParameterf(target, pname, v);
-    if (pname == GL_TEXTURE_MIN_FILTER && mip_filter((u32)v))
+    if (pname == GL_TEXTURE_MIN_FILTER && mip_filter((u32)v)) {
+        p_glTexParameteri(target, pname, mip_set(target, (u32)v));
         set_aniso(target);
+        return;
+    }
+    p_glTexParameterf(target, pname, v);
 }
 
 void h_glGenerateMipmap(u32 target)
@@ -306,6 +355,8 @@ float glx_aniso_now(void) { return aniso; }
 float glx_aniso_max(void) { return max_aniso; }
 void glx_set_msaa(int n) { pending_samples = n < 0 ? 0 : n; }
 void glx_set_aniso(float n) { pending_aniso = n < 0 ? 0 : n; }
+int glx_mipmap_now(void) { return want_mip(); }
+void glx_set_mipmap(int mode) { pending_mip = mode < 0 ? 0 : mode > 2 ? 2 : mode; }
 
 /* eagl.c, after a frame is shown: a frame is drawn wholly with one framebuffer */
 void glx_frame_end(void)
@@ -324,6 +375,30 @@ void glx_frame_end(void)
             else if (cur == ms_fbo)
                 gles_bind_fb(GL_FRAMEBUFFER, main_fbo);
             rt_log(samples ? "[msaa] now %d samples\n" : "[msaa] now off\n", samples);
+        }
+    }
+    if (pending_mip >= 0) {
+        int m = pending_mip;
+        pending_mip = -1;
+        if (m != want_mip()) {
+            mip_mode = m;
+            u32 active = 0, was = 0, count = 0;
+            p_glGetIntegerv(GL_ACTIVE_TEXTURE, GA(&active));
+            p_glActiveTexture(GL_TEXTURE0);
+            p_glGetIntegerv(TEX_BINDING_2D, GA(&was));
+            for (u32 t = 1; t < 65536; t++)
+                if (mip_game[t] && p_glIsTexture(t)) {
+                    p_glBindTexture(GL_TEXTURE_2D, t);
+                    p_glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER,
+                                      mip_value(m, GL_NEAREST_MIPMAP_NEAREST + (u32)(mip_game[t] - 1)));
+                    count++;
+                }
+            p_glBindTexture(GL_TEXTURE_2D, was);
+            p_glActiveTexture(active);
+            while (p_glGetError())
+                ;
+            rt_log("[mipmap] now %s (%u textures)\n", m == 2 ? "trilinear" : m == 1 ? "bilinear" : "the game's own",
+                   count);
         }
     }
     if (pending_aniso >= 0 && max_aniso > 0) {

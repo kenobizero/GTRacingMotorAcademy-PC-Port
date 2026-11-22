@@ -99,6 +99,7 @@ defaults are below), the log `GTRacing/gtracing.log`.
 | `GT_POSTFX` | `4` (as on the PC) | Enhanced; every mode is there (its passes are drawn with OpenGL ES). `0` or `1` for more frames on a slow phone |
 | `GT_FPS` | `60` | the frame rate: `30`, `60`, `0` uncapped (vsync on: as fast as the screen refreshes, 120 on a 120 Hz phone). Options > Display > Frame Rate (the Full Screen row on the PC) |
 | `GT_FXAA` | `0` | FXAA over the picture as it is drawn on the screen, alone or over MSAA. Options > Display > Anti-aliasing: Off, FXAA, 2x, 4x, 4x + FXAA, Auto |
+| `GT_MIPMAP` | `trilinear` | how mipmapped textures blend their levels: `trilinear`, `bilinear`, `game` (its own). Options > Display > Textures (the Anisotropic row on the PC), with the anisotropic level: Bilinear, Trilinear, Trilinear + 2x .. 16x, Game + 16x |
 | `GT_VSYNC` | `0` | the frame cap paces the frames (a capped rate only; uncapped always waits for the screen) |
 | `GT_BIG_CORES`, `GT_PERF_HINT` | `1`, `1` | the game's threads on the fast cores; the frame thread's clocks raised to keep the frame rate (Android 13+) |
 | `GT_PRIME_CORE` | `1` | the frame thread alone on the fastest core (a Snapdragon 870's 3.19 GHz one), the other threads off it |

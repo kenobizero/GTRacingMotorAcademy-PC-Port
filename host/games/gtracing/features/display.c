@@ -66,6 +66,26 @@ void eagl_set_frame_rate(int fps);
 int gla_fxaa_now(void);
 void gla_set_fxaa(int on);
 static const int fr_opts[] = {30, 60, 0};
+/* the Anisotropic row is Textures: the mipmap filter (glenhance.c MIPMAP) and the anisotropic level together */
+int glx_mipmap_now(void);
+void glx_set_mipmap(int mode);
+float glx_aniso_now(void);
+float glx_aniso_max(void);
+typedef struct { const char *label; int mip; int af; } TexOpt;
+static const TexOpt tex_and[] = {{"Bilinear", 1, 1}, {"Trilinear", 2, 1}, {"Trilinear + 2x", 2, 2},
+                                 {"Trilinear + 4x", 2, 4}, {"Trilinear + 8x", 2, 8}, {"Trilinear + 16x", 2, 16},
+                                 {"Game + 16x", 0, 16}};
+#define NTEX_AND 7
+static int tex_and_index(void)
+{
+    int m = glx_mipmap_now(), af = (int)glx_aniso_now(), best = -1;
+    if (af < 1)
+        af = 1;
+    for (int i = 0; i < NTEX_AND; i++)
+        if (tex_and[i].mip == m && tex_and[i].af <= af && (best < 0 || tex_and[i].af > tex_and[best].af))
+            best = i;
+    return best < 0 ? (m == 1 ? 0 : 1) : best;
+}
 typedef struct { const char *label; int msaa, fxaa; } AaOpt;
 static const AaOpt aa_and[] = {{"Off", 0, 0}, {"FXAA", 0, 1}, {"2x MSAA", 2, 0}, {"4x MSAA", 4, 0},
                                {"4x + FXAA", 4, 1}};
@@ -307,10 +327,14 @@ static void values(u32 pl)
     set_text(pl, "Sel4.txtSelectorType", aa_text(t, sizeof t, aa_opts[aa_index()]));
 #endif
     set_text(pl, "Sel6.txtSelectorType", blur_text(t, sizeof t));
+#ifdef __ANDROID__
+    set_text(pl, "Sel5.txtSelectorType", tex_and[tex_and_index()].label);
+#else
     int af = af_opts[af_index()];
     if (af > 1)
         snprintf(t, sizeof t, "%dx", af);
     set_text(pl, "Sel5.txtSelectorType", af > 1 ? t : "Off");
+#endif
     set_text(pl, "Sel7.txtSelectorType", postfx_text());
     /* one line (the main menus' text field wraps longer ones); while a restart waits, the Restart button
        takes the note's place (display_menu_layout) */
@@ -327,7 +351,11 @@ void display_menu_fill(u32 pl)
     set_text(pl, "Title3.typefield", "Full Screen:");
 #endif
     set_text(pl, "Title4.typefield", "Anti-aliasing:");
+#ifdef __ANDROID__
+    set_text(pl, "Title5.typefield", "Textures:");
+#else
     set_text(pl, "Title5.typefield", "Anisotropic:");     /* "... Filtering" takes two lines */
+#endif
     set_text(pl, "Title6.typefield", "Motion Blur:");
     set_text(pl, "Title7.typefield", "PostFX:");
     set_text(pl, "CellRestart.txtKey", "Restart to Apply");
@@ -471,6 +499,29 @@ void display_menu_click(u32 pl, const char *ps)
             snprintf(t, sizeof t, "%s", aa_and[idx[i]].label);
         set_text(pl, "Sel4.txtSelectorType", t);
         rt_log("[display] anti-aliasing %s\n", t);
+        return;
+    } else if (row == 5) {
+        /* Bilinear, Trilinear, Trilinear + 2x .. 16x anisotropic (up to the driver's most), the game's own + 16x */
+        float mx = glx_aniso_max();
+        int n = 0, idx[NTEX_AND];
+        for (int k = 0; k < NTEX_AND; k++)
+            if (mx <= 0 || (float)tex_and[k].af <= mx)
+                idx[n++] = k;
+        int cur = tex_and_index(), i = 0;
+        for (int k = 0; k < n; k++)
+            if (idx[k] == cur)
+                i = k;
+        i = (i + dir + n) % n;
+        const TexOpt *o = &tex_and[idx[i]];
+        glx_set_mipmap(o->mip);
+        glx_set_aniso((float)o->af);
+        char v[8];
+        snprintf(v, sizeof v, "%d", o->af);
+        ini_set("GT_ANISOTROPIC", v, "anisotropic filtering: 1 off, 2, 4, 8, 16 (Options > Display > Textures)");
+        ini_set("GT_MIPMAP", o->mip == 2 ? "trilinear" : o->mip == 1 ? "bilinear" : "game",
+                "mipmaps: trilinear, bilinear, game (its own) (Options > Display > Textures)");
+        set_text(pl, "Sel5.txtSelectorType", o->label);
+        rt_log("[display] textures %s\n", o->label);
         return;
 #endif
     } else if (row == 3) {
