@@ -150,6 +150,9 @@ static void load_defaults(void)
         {"GT_DEVICE", "ipad3"}, {"GT_RESOLUTION", "monitor"}, {"GT_WIDE", "monitor"},
         {"GT_FULLSCREEN", "1"}, {"GT_MSAA", "0"}, {"GT_TOUCH_SCREEN", "1"},
         {"GT_GPU_PROFILE", "igpu"}, {"GT_CURSOR", "0"},
+        /* the frame cap paces the frames (GT_FPS); Android's compositor never tears, and vsync's wait for the
+           next refresh turned a frame a little late into a frame twice as long */
+        {"GT_VSYNC", "0"}, {"GT_BIG_CORES", "1"},
         {"GT_CLOUD_BOARD_URL", "https://gt-redbull-board.gtracing-pc.workers.dev"},
     };
 #else

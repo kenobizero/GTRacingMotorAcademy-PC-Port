@@ -6,6 +6,9 @@
    Android: SDL's activity calls main (SDL_main) with no arguments.  The game folder and the port's files (home\,
    gtracing.ini, gtracing.log) are in GTRacing/ on the shared storage when the app may write there (All files
    access), else in the app's own folder (Android/data/<package>/files). */
+#if defined(__ANDROID__) && !defined(_GNU_SOURCE)
+#define _GNU_SOURCE                 /* sched_setaffinity, cpu_set_t (BIG_CORES) */
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -14,6 +17,7 @@
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_main.h>
 #include <dlfcn.h>
+#include <sched.h>
 #include <signal.h>
 #include <sys/stat.h>
 #endif
@@ -310,6 +314,46 @@ static void android_dirs(void)
     chdir(exe_dir);
 }
 
+/* GT_BIG_CORES=1 (the Android default): the game's threads on the phone's fast cores only.  A phone's scheduler
+   puts a new thread on a little core first and moves it up late; the game's main and render threads then ran at a
+   quarter of the speed.  The fast cores: those whose highest clock is at least 3/4 of the fastest one's (on a
+   Snapdragon 870: the four Cortex-A77).  Set on the host's main thread before the game's threads are made: they
+   take its mask. */
+static void android_big_cores(void)
+{
+    const char *e = getenv("GT_BIG_CORES");
+    if (e && *e == '0')
+        return;
+    long f[32] = {0}, top = 0;
+    int n = 0;
+    for (int i = 0; i < 32; i++) {
+        char p[96];
+        snprintf(p, sizeof p, "/sys/devices/system/cpu/cpu%d/cpufreq/cpuinfo_max_freq", i);
+        FILE *fp = fopen(p, "r");
+        if (!fp)
+            continue;
+        if (fscanf(fp, "%ld", &f[i]) == 1 && f[i] > top)
+            top = f[i];
+        fclose(fp);
+        n = i + 1;
+    }
+    if (!top)
+        return;
+    cpu_set_t set;
+    CPU_ZERO(&set);
+    int k = 0;
+    for (int i = 0; i < n; i++)
+        if (f[i] * 4 >= top * 3) {
+            CPU_SET(i, &set);
+            k++;
+        }
+    if (k == 0 || k == n)
+        return;                             /* all the same speed */
+    int r = sched_setaffinity(0, sizeof set, &set);
+    rt_log("[main] BIG_CORES: the game's threads on %d of %d cores (%ld MHz)%s\n", k, n, top / 1000,
+           r ? " -- refused" : "");
+}
+
 /* The port's menu pages (the patched menu SWFs, host/build.py's patch/): an APK built with the game's menu files
    (.github/workflows/android.yml) carries them as assets gtpatch/<name>; they are put in the port's folder's
    patch/ (where ns_misc.c reads them) when missing or different.  An APK without them changes nothing there. */
@@ -405,6 +449,7 @@ static int host_main(int argc, char **argv)
 #else
     gt_fault_install();
     android_patch_from_apk();
+    android_big_cores();
     {
         Dl_info di;
         if (dladdr((void *)host_main, &di) && di.dli_fbase)

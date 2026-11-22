@@ -187,6 +187,8 @@ static void it_advance(mcontext_t *m)
     m->arm_cpsr = cpsr;
 }
 
+volatile u32 gt_low_reads;                 /* the low reads done here (eagl.c logs them with the frame rate) */
+
 static int fix_low_read(mcontext_t *m, u32 addr)
 {
     u32 pc = m->arm_pc;
@@ -220,6 +222,7 @@ static int fix_low_read(mcontext_t *m, u32 addr)
             break;
         }
     }
+    gt_low_reads++;
     if (L.wb_reg >= 0 && L.wb_reg != L.rt && L.wb_reg != L.rt2)
         *reg_of(m, L.wb_reg) = L.wb_value;
     *reg_of(m, L.rt) = v;

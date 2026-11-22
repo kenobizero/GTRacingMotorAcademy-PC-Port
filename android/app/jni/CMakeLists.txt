@@ -43,7 +43,10 @@ endif()
 
 # every compile: no build-machine path in the library (as on Windows, tools/privacy_scan.py), the guest's integer
 # and aliasing rules, hidden symbols (direct calls between the 23,873 functions, no PLT); SDL_main stays visible
+# ARMv8 in its 32-bit mode (every phone that runs Android 10 and 32-bit apps), tuned for the Cortex-A76/A77
+# class (Snapdragon 855-888 and 870, Dimensity 1000-1200)
 set(COMMON -O2 -fno-strict-aliasing -fwrapv -fvisibility=hidden -DARM_LOW_DELTA=0x8bf000u
+           -march=armv8-a -mfpu=neon-fp-armv8 -mtune=cortex-a76
            "-ffile-prefix-map=${REPO}=.")
 
 # the generated code and runtime/ (compile_all.py's flags)

@@ -1178,6 +1178,16 @@ static int sv_enabled(void)
         sv_fencesync = (T_sv_fence)SDL_GL_GetProcAddress("glFenceSync");
         sv_clientwait = (T_sv_wait)SDL_GL_GetProcAddress("glClientWaitSync");
         sv_delsync = (T_sv_delsync)SDL_GL_GetProcAddress("glDeleteSync");
+#if !GT_GL_DESKTOP
+        /* OpenGL ES: the same calls from extensions (EXT_buffer_storage: the persistent ring; Adreno and Mali have
+           it; ES 3.2 / OES_draw_elements_base_vertex) */
+        if (!sv_storage)
+            sv_storage = (T_sv_storage)SDL_GL_GetProcAddress("glBufferStorageEXT");
+        if (!sv_basevertex)
+            sv_basevertex = (T_sv_basevertex)SDL_GL_GetProcAddress("glDrawElementsBaseVertexOES");
+        if (!sv_basevertex)
+            sv_basevertex = (T_sv_basevertex)SDL_GL_GetProcAddress("glDrawElementsBaseVertexEXT");
+#endif
         int can_map = sv_storage && sv_mapr && sv_fencesync && sv_clientwait && sv_delsync;
         sv_mode = e && !_stricmp(e, "subdata") ? 1 : 2;
         if (sv_mode == 2 && !can_map)

@@ -373,7 +373,24 @@ static void present(Ctx *x)
     p_glEnd();
 #else
     gla_quad_draw(x->tex, vx, vy, W, H);
-    if (frames < 3 || (frames % 600) == 0) {     /* the first frames' picture path, for the log */
+    {
+        /* the frame rate, every 600 frames: with the low reads the fault handler did meanwhile (each a signal,
+           ~10 us: a hot one costs frames) */
+        extern volatile u32 gt_low_reads;
+        static LARGE_INTEGER t_last;
+        static u32 f_last, low_last;
+        if (frames - f_last >= 600) {
+            LARGE_INTEGER now, fq;
+            QueryPerformanceCounter(&now);
+            QueryPerformanceFrequency(&fq);
+            if (t_last.QuadPart)
+                rt_log("[perf] %.1f fps over %u frames; low reads %u\n",
+                       (double)(frames - f_last) * (double)fq.QuadPart / (double)(now.QuadPart - t_last.QuadPart),
+                       frames - f_last, gt_low_reads - low_last);
+            t_last = now, f_last = frames, low_last = gt_low_reads;
+        }
+    }
+    if (frames < 3) {                            /* the first frames' picture path, for the log */
         u32 e = p_glGetError();
         gles_bind_fb(GL_READ_FRAMEBUFFER, ms ? ms : x->src_fbo);
         u32 st = p_glCheckFramebufferStatus(GL_READ_FRAMEBUFFER);
